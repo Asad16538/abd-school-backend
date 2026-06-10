@@ -1,4 +1,3 @@
-# backend/app.py
 import sqlite3
 import random
 import jwt
@@ -11,39 +10,14 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
-from datetime import datetime  # Sirf ye import rakho, baki sab hatado
+from datetime import datetime
 
-# 🎯 EXACT TARGET PATH: Yeh direct aapke 'backend/static' folder ko nishana banayega
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-static_folder_path = os.path.join(BASE_DIR, 'static')
+# --- DATABASE PATH ---
+DB_NAME = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '.') + "/school.db"
 
-# Flask App Initialization with correct absolute path
-app = Flask(__name__, static_folder=static_folder_path, static_url_path='/static')
-CORS(app)
-bcrypt = Bcrypt(app)
-
-DB_NAME = "school.db"
-SECRET_KEY = "ab_digital_work_secret_key_secure_⚡"
-
+# --- MISSING VARIABLES (YAHAN ADD KARO) ---
 verification_store = {}
-
-# CORS Fix: Har request allow hogi
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-def calculate_distance_meters(lat1, lon1, lat2, lon2):
-    import math
-    R = 6371000.0  # Earth radius in meters
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+SECRET_KEY = "ab_digital_work_secret_key_secure_⚡"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -138,7 +112,7 @@ def init_db():
     if not cursor.fetchone():
         cursor.execute('''
             INSERT INTO school_settings (id, school_name, school_address, school_email, school_mobile, school_logo, school_signature) 
-            VALUES (1, 'Smart School ERP', 'Madhya Pradesh, India', 'admin@school.com', '9876543210', NULL, NULL)
+            VALUES (1, 'Smart School ERP', 'Madhya Pradesh, India', 'admin@school.com', '9893260067', NULL, NULL)
         ''')
 
     # 💾 Database Save State
@@ -325,6 +299,58 @@ def init_db():
     # 🔒 Safely close the connection
     conn.close()
     print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
+
+
+def init_expense_table():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS expenses")
+    cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, payment_mode TEXT NOT NULL, vendor_name TEXT, remarks TEXT)''')
+    conn.commit()
+    conn.close()
+
+# --- APP CONFIGURATION ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+static_folder_path = os.path.join(BASE_DIR, 'static')
+app = Flask(__name__, static_folder=static_folder_path, static_url_path='/static')
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+bcrypt = Bcrypt(app)
+
+with app.app_context():
+    print("🔄 Initializing database...")
+    init_db()
+    init_expense_table()
+    print("✅ DATABASE INITIALIZED ON STARTUP!")
+    
+    # Verify tables created
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = cursor.fetchall()
+    print(f"📋 Tables created: {[t[0] for t in tables]}")
+    conn.close()
+
+# --- ROUTES (Yahan se apne saare @app.route wale functions niche paste kar do) ---
+
+# CORS Fix: Har request allow hogi
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+def calculate_distance_meters(lat1, lon1, lat2, lon2):
+    import math
+    R = 6371000.0  # Earth radius in meters
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
     
 # 📊 1. GET DASHBOARD STATS API (EGADAM CLEAN & ZERO DEFAULT)
 @app.route('/api/dashboard-stats', methods=['GET'])
@@ -476,7 +502,7 @@ def submit_fee():
                 )
                 
                 print("🚀 Step 5: Sending request to WhatsApp Bot...")
-                requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={"mobile": formatted_mobile, "message": hindi_whatsapp_msg}, timeout=2)
+                requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": hindi_whatsapp_msg}, timeout=5)
         except Exception as whatsapp_err:
             print(f"⚠️ WhatsApp Engine Skipped/Offline: {whatsapp_err}")
 
@@ -683,19 +709,18 @@ def get_fees_class_report():
 # =====================================================================
 # 🔔 2. BULK AUTOMATED WHATSAPP REMINDER ENGINE WITH COOLDOWN PROTECTION
 # =====================================================================
+# 🔔 2. BULK AUTOMATED WHATSAPP REMINDER ENGINE
 @app.route('/api/payroll/send-bulk-fee-reminders', methods=['POST'])
 def send_bulk_fee_reminders():
     import time
     data = request.json or {}
-    student_ids = data.get('student_ids', []) # Frontend se select kiye hue bacho ki ID list aayegi
+    student_ids = data.get('student_ids', [])
     
     if not student_ids:
         return jsonify({"success": False, "error": "Kripya kam se kam ek bache ko select karein!"}), 400
         
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
-    # Main School branding detail read karo message templates ke liye
     cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
     school_row = cursor.fetchone()
     school_name = school_row[0] if school_row else "Smart School ERP"
@@ -703,68 +728,38 @@ def send_bulk_fee_reminders():
     success_sent = 0
     failed_sent = 0
     
-    print(f"🚀 [BULK ENGINE ACTIVE] Processing {len(student_ids)} Fee Notification requests...")
-    
     for s_id in student_ids:
         try:
-            cursor.execute('''
-                SELECT name, parent_mobile, 
-                       (school_fee_total - school_fee_paid), 
-                       (transport_fee_total - transport_fee_paid) 
-                FROM students WHERE id = ? AND status = 'Active'
-            ''', (s_id,))
+            cursor.execute('SELECT name, parent_mobile, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ? AND status = "Active"', (s_id,))
             row = cursor.fetchone()
-            
             if row:
                 student_name, mobile, pending_school, pending_trans = row
                 total_due = pending_school + pending_trans
-                
-                # Agar bache ki koi fees baki hi nahi hai, toh use reminder mat bhejo safely skip
-                if total_due <= 0:
-                    continue
+                if total_due <= 0: continue
                     
                 formatted_mobile = str(mobile).strip()
                 if not formatted_mobile.startswith('91') and len(formatted_mobile) == 10:
                     formatted_mobile = f"91{formatted_mobile}"
                     
-                # 📜 SATEEK HINDI REMINDER TEMPLATE
-                whatsapp_message = (
-                    f"🔔 *[फीस अनुस्मारक (FEE REMINDER) - {school_name.upper()}]*\n\n"
-                    f"आदरणीय अभिभावक,\n\n"
-                    f"आपके बच्चे *{student_name}* की स्कूल फीस का विवरण नीचे दिया गया है:\n"
-                    f"📚 *शेष शैक्षणिक फीस:* ₹{pending_school}\n"
-                    f"🚌 *शेष वाहन/बस फीस:* ₹{pending_trans}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"💰 *कुल देय राशि (Total Due):* *₹{total_due}*\n\n"
-                    f"कृपया समय पर फीस जमा करवाकर रसीद प्राप्त करें। यदि आप फीस जमा कर चुके हैं, तो कृपया इसे अनदेखा करें।\n\n"
-                    f"_सॉफ्टवेयर मैनेजर: A.B.Digital Work_"
-                )
+                whatsapp_message = f"🔔 *[फीस अनुस्मारक - {school_name.upper()}]*\n\nआदरणीय अभिभावक,\n\n{student_name} की फीस विवरण:\n📚 शैक्षणिक: ₹{pending_school}\n🚌 वाहन: ₹{pending_trans}\n\n💰 *कुल देय राशि:* *₹{total_due}*\n\n_System Powered by A.B.Digital Work_"
                 
-                # 🚀 Hit node api connection pipeline
-                response = requests.post(
-                    'requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', 
-                    json={"mobile": formatted_mobile, "message": whatsapp_message},
-                    timeout=3
-                )
+                response = requests.post('https://abd-school-backend-production.up.railway.app/send-message', 
+                                         json={"mobile": formatted_mobile, "message": whatsapp_message}, 
+                                         timeout=5)
                 
                 if response.status_code == 200:
                     success_sent += 1
-                    # 🔒 WHATSAPP ACCOUNT SAFETY COOLDOWN: 
-                    # Har message ke baad 3 seconds ka delay taaki number spam trigger na kare!
-                    time.sleep(3) 
+                    time.sleep(3) # Safety cooldown
                 else:
                     failed_sent += 1
         except Exception as single_err:
-            print(f"⚠️ Student ID {s_id} push automation error skipped:", single_err)
+            print(f"⚠️ Error: {single_err}")
             failed_sent += 1
             
     conn.close()
-    return jsonify({
-        "success": True, 
-        "message": f"🎉 Process Complete! {success_sent} Reminders sent safely, {failed_sent} failed."
-    })
+    return jsonify({"success": True, "message": f"🎉 {success_sent} Reminders sent, {failed_sent} failed."})
 
-# 📲 INSTANT WHATSAPP FEE REMINDER API
+# 📲 INSTANT WHATSAPP FEE REMINDER API (Fixed Indentation)
 @app.route('/api/fee-reminder', methods=['POST'])
 def send_fee_reminder():
     data = request.json
@@ -774,26 +769,25 @@ def send_fee_reminder():
     cursor = conn.cursor()
     cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
     school_name = cursor.fetchone()[0]
-    
-    cursor.execute('''
-        SELECT name, parent_mobile, 
-               (school_fee_total - school_fee_paid), 
-               (transport_fee_total - transport_fee_paid) 
-        FROM students WHERE id = ?
-    ''', (student_id,))
+    cursor.execute('SELECT name, parent_mobile, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ?', (student_id,))
     row = cursor.fetchone()
     conn.close()
     
     if row:
-        student_name, mobile, pending_school, pending_trans = row[0], row[1], row[2], row[3]
+        student_name, mobile, pending_school, pending_trans = row
         total_due = pending_school + pending_trans
         formatted_mobile = f"91{mobile}" if not mobile.startswith('91') else mobile
-        whatsapp_message = f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\nNamaste,\n\n🍁 *Student Name:* {student_name}\n📊 *Pending School Fee:* ₹{pending_school}\n🚌 *Pending Van/Bus Fee:* ₹{pending_trans}\n\n💰 *Total Outstanding Amount:* *₹{total_due}*\n\nKripya samay par school fees jama karein.\n\n_System Powered by A.B.Digital Work_"
+        whatsapp_message = f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\nNamaste {student_name}, Total Outstanding: *₹{total_due}*"
         
         try:
-            response = requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={"mobile": formatted_mobile, "message": whatsapp_message})
+            # TRY BLOCK KE ANDAR HI IF CONDITION RAKHNA HAI
+            response = requests.post('https://abd-school-backend-production.up.railway.app/send-message', 
+                                     json={"mobile": formatted_mobile, "message": whatsapp_message}, 
+                                     timeout=5)
             if response.json().get('success'):
-                return jsonify({"success": True, "message": f"🎉 Reminder instantly sent to {student_name}'s parent WhatsApp!"})
+                return jsonify({"success": True, "message": "🎉 Reminder instantly sent!"})
+            else:
+                return jsonify({"success": False, "message": "Bot failed to send!"})
         except Exception as e:
             return jsonify({"success": False, "message": "Bot Server Offline!"})
     return jsonify({"success": False, "message": "Record not found!"})
@@ -872,26 +866,37 @@ def login():
 # 📲 FORGOT PASSWORD - WHATSAPP OTP SEND ROUTE
 @app.route('/api/send-verification', methods=['POST'])
 def send_verification():
+    global verification_store
     data = request.json
     username = data.get('username')
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT school_mobile FROM school_settings WHERE id = 1")
-    admin_mobile = cursor.fetchone()[0]
-    conn.close()
+    
+    # ✅ FIX: Trim aur lowercase compare
+    if username:
+        username = username.strip().lower()
+    
+    print(f"📥 Received username: '{username}'")
     
     if username == "admin":
         otp = str(random.randint(100000, 999999))
-        verification_store[username] = otp
+        verification_store['admin'] = otp  # Fixed key
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT school_mobile FROM school_settings WHERE id = 1")
+        row = cursor.fetchone()
+        admin_mobile = row[0] if row else "9893260067"
+        conn.close()
+        
         formatted_mobile = f"91{admin_mobile}" if not admin_mobile.startswith('91') else admin_mobile
-        message = f"🔐 *[SECURITY ALERT]*\n\nYour Smart School ERP verification OTP is: *{otp}*\n\nValid for 5 minutes. Do not share this with anyone.\n\n_System Secure Access_"
+        message = f"🔐 Your OTP is: {otp}"
+        
         try:
-            res = requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={"mobile": formatted_mobile, "message": message})
-            if res.json().get('success'):
-                return jsonify({"success": True, "message": "🎉 Verification code sent to Admin WhatsApp!"})
+            WHATSAPP_BOT_URL = "https://whatsapp-bot-node-75id.onrender.com/send-message"
+            requests.post(WHATSAPP_BOT_URL, json={"mobile": formatted_mobile, "message": message}, timeout=5)
+            return jsonify({"success": True, "message": f"🎉 OTP: {otp} (WhatsApp sent)"})
         except:
-            print(f"⚠️ Bot Bridge offline! Code terminal par dekhien: {otp}")
-            return jsonify({"success": True, "message": "🎉 Code terminal par print ho gaya hai!"})
+            return jsonify({"success": True, "message": f"🎉 OTP: {otp} (Check terminal)"})
+    
     return jsonify({"success": False, "message": "User nahi mila!"})
 
 @app.route('/api/verify-and-reset', methods=['POST'])
@@ -1336,7 +1341,7 @@ def mark_staff_attendance():
         whatsapp_msg += f"_Powered by: A.B.Digital Work_"
         
         try:
-            requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
+            requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
         except Exception as wa_err:
             print("⚠️ WhatsApp alert system pipeline offline:", wa_err)
             
@@ -1375,7 +1380,7 @@ def mark_staff_attendance():
             f"_Powered by: A.B.Digital Work_"
         )
         try:
-            requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
+            requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
         except Exception as wa_err:
             print("⚠️ WhatsApp exit pipeline offline:", wa_err)
             
@@ -1711,38 +1716,6 @@ def get_management_payroll_sheet():
 # Note: Kripya dhyan dein ki jahan aapka database initialization function hai (jaise setup_database() ya db_init()), 
 # wahan yeh table structure execute hona chahiye. Aap ise direct 'app.py' me routes ke sath register kar sakte hain:
 
-# =====================================================================
-# 📊 FORCE DATABASE TABLE RESET ENGINE
-# =====================================================================
-
-def init_expense_table():
-    import sqlite3
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # 🎯 FORCE RESET: Purani kharab table ko pehle drop (delete) maarenge
-    # Taaki naya structure bina kisi purane kachre ke fresh generate ho ske
-    cursor.execute("DROP TABLE IF EXISTS expenses")
-    
-    # Clean aur sateek columns ke sath fresh table creation
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            date TEXT NOT NULL,
-            payment_mode TEXT NOT NULL,
-            vendor_name TEXT,
-            remarks TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    print("🚀 Expenses Table Re-created with Perfect Column Structures Successfully!")
-
-# App startup par hi fresh initialization call hoga
-init_expense_table()
 
 
 @app.route('/api/accounting/add-expense', methods=['POST'])
@@ -2277,15 +2250,19 @@ def submit_attendance():
             
             placeholders = ', '.join(['?'] * len(absent_student_ids))
             cursor.execute(f"SELECT name, parent_mobile FROM students WHERE id IN ({placeholders})", absent_student_ids)
+            
+            # WhatsApp URL
+            BOT_URL = 'https://abd-school-backend-production.up.railway.app/send-message'
+            
             for name, mobile in cursor.fetchall():
                 if mobile:
                     msg = f"🧾 *[अनुपस्थिति सूचना - {school_name.upper()}]*\nनमस्ते, {name} आज स्कूल में अनुपस्थित (ABSENT) है।"
                     try:
-                        # Ye aapke Node.js bot (port 6000) ko hit karega
-                        requests.post('requests.post('https://whatsapp-bot-node-75id.onrender.com/send-message', json={...}, timeout=5)', json={
+                        # FIXED: URL aur single requests.post call
+                        requests.post(BOT_URL, json={
                             "mobile": f"91{str(mobile).strip()[-10:]}", 
                             "message": msg
-                        }, timeout=2)
+                        }, timeout=5)
                     except Exception as e:
                         print(f"WhatsApp Error: {e}")
         
@@ -2297,15 +2274,5 @@ def submit_attendance():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    init_db()
-    
-    # 💾 SQLite high-speed mode acceleration to kill loading loops
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.close()
-    except Exception:
-        pass
-        
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)

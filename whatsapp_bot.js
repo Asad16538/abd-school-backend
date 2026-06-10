@@ -1,8 +1,7 @@
 // backend/whatsapp_bot.js
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const express = require('express');
-const pino = require('pino'); // Spacing aur clean coding standard ke liye pino import kiya
+const pino = require('pino');
 
 const app = express();
 app.use(express.json());
@@ -14,8 +13,9 @@ async function connectToWhatsApp() {
     
     sock = makeWASocket({
         auth: state,
-        logger: pino({ level: 'silent' }), // Yeh line saare faltu codes aur logs ko silent (gayab) kar degi
-        printQRInTerminal: false
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: true,  // ✅ QR code terminal mein dikhega
+        browser: ['Chrome (Linux)', '', '']
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -23,15 +23,14 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
-            console.log('\n🔄 [A.B.Digital Work] SCAN THIS QR WITH WHATSAPP TO LINK BOT:');
-            qrcode.generate(qr, { small: true });
+            console.log('📱 Scan QR code with WhatsApp');
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('⚠️ Connection closed, reconnecting: ', shouldReconnect);
+            console.log('⚠️ Connection closed, reconnecting:', shouldReconnect);
             if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
-            console.log('\n🚀 [A.B.Digital Work] INSTANT WHATSAPP BOT IS LIVE AND CONNECTED!');
+            console.log('🚀 WHATSAPP BOT IS LIVE AND CONNECTED! ✅');
         }
     });
 }
@@ -39,15 +38,18 @@ async function connectToWhatsApp() {
 app.post('/send-message', async (req, res) => {
     const { mobile, message } = req.body;
     try {
+        if (!sock) {
+            return res.status(500).json({ success: false, error: "Bot not connected yet" });
+        }
         const formattedJid = `${mobile.replace('+', '')}@s.whatsapp.net`;
         await sock.sendMessage(formattedJid, { text: message });
-        return res.json({ success: true, message: "Instant Message Delivered!" });
+        return res.json({ success: true, message: "Message sent!" });
     } catch (error) {
         return res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.listen(6000, () => {
-    console.log('⚡ NodeJS Bot Bridge listening on port 6000');
+    console.log('⚡ Bot Bridge listening on port 6000');
     connectToWhatsApp();
 });
