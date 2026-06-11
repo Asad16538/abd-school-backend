@@ -12,6 +12,9 @@ from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
 from datetime import datetime
 
+# WhatsApp Bot URL - EK HI JAGAH DEFINE
+WHATSAPP_BOT_URL = "https://whatsapp-bot-node-75id.onrender.com/send-message"
+
 # --- DATABASE PATH ---
 DB_NAME = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '.') + "/school.db"
 
@@ -863,22 +866,18 @@ def login():
         return jsonify({"success": True, "token": token, "role": user[2]})
     return jsonify({"success": False, "message": "Galat Username/Password"})
 
-# 📲 FORGOT PASSWORD - WHATSAPP OTP SEND ROUTE
 @app.route('/api/send-verification', methods=['POST'])
 def send_verification():
     global verification_store
     data = request.json
     username = data.get('username')
     
-    # ✅ FIX: Trim aur lowercase compare
     if username:
         username = username.strip().lower()
     
-    print(f"📥 Received username: '{username}'")
-    
     if username == "admin":
         otp = str(random.randint(100000, 999999))
-        verification_store['admin'] = otp  # Fixed key
+        verification_store['admin'] = otp
         
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -888,14 +887,19 @@ def send_verification():
         conn.close()
         
         formatted_mobile = f"91{admin_mobile}" if not admin_mobile.startswith('91') else admin_mobile
-        message = f"🔐 Your OTP is: {otp}"
+        message = f"🔐 *[SECURITY ALERT]*\n\nYour Smart School ERP verification OTP is: *{otp}*\n\nValid for 5 minutes."
         
+        # ✅ GLOBAL URL USE KARO
         try:
-            WHATSAPP_BOT_URL = "https://whatsapp-bot-node-75id.onrender.com/send-message"
-            requests.post(WHATSAPP_BOT_URL, json={"mobile": formatted_mobile, "message": message}, timeout=5)
-            return jsonify({"success": True, "message": f"🎉 OTP: {otp} (WhatsApp sent)"})
-        except:
-            return jsonify({"success": True, "message": f"🎉 OTP: {otp} (Check terminal)"})
+            res = requests.post(WHATSAPP_BOT_URL, json={"mobile": formatted_mobile, "message": message}, timeout=5)
+            if res.status_code == 200:
+                return jsonify({"success": True, "message": "🎉 OTP sent to WhatsApp!"})
+            else:
+                print(f"WhatsApp bot error: {res.status_code}")
+                return jsonify({"success": False, "message": "WhatsApp bot error!"})
+        except Exception as e:
+            print(f"WhatsApp exception: {e}")
+            return jsonify({"success": False, "message": "WhatsApp bot offline!"})
     
     return jsonify({"success": False, "message": "User nahi mila!"})
 
