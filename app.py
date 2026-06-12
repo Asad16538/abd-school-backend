@@ -12,15 +12,29 @@ from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
 from datetime import datetime
 
-# WhatsApp Bot URL - EK HI JAGAH DEFINE
-WHATSAPP_BOT_URL = "https://whatsapp-bot-node-75id.onrender.com/send-message"
-
 # --- DATABASE PATH ---
-DB_NAME = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '.') + "/school.db"
+# Render ke liye simple local path use karo
+DB_NAME = "school.db"
 
 # --- MISSING VARIABLES (YAHAN ADD KARO) ---
 verification_store = {}
 SECRET_KEY = "ab_digital_work_secret_key_secure_⚡"
+
+# File ke top par add karo
+TELEGRAM_TOKEN = "8793915550:AAGK3RIR9PDQXkawoxaSp-69sfB5jge87A0"
+TELEGRAM_CHAT_ID = "1989970458" # Yahan apni Telegram Chat ID daal dena
+
+# Yeh ek hi function poori file mein hona chahiye
+def send_telegram_msg(text):
+    # CHAT_ID ko yahan hardcode kar do taaki koi confusion na rahe
+    CHAT_ID = "1989970458" 
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        print("Telegram Response:", response.text) # <--- Isse Render Logs mein dikh jayega ki message gaya ya nahi
+    except Exception as e:
+        print(f"Telegram Bot Error: {e}")
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -79,6 +93,14 @@ def init_db():
             status TEXT DEFAULT 'Active'
         )
     ''')
+    
+    # YAHAN PASTE KARO: Naya Column Migration
+    try:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_telegram_id TEXT")
+        conn.commit()
+        print("✅ Column 'parent_telegram_id' added successfully!")
+    except sqlite3.OperationalError:
+        pass # Column pehle se hai toh ignore karo
     
     # 4. Expenses (Kharcha) Table
     cursor.execute('''
@@ -188,11 +210,14 @@ def init_db():
 
     conn.commit()
 
-    # ⚡ AUTOMATIC DATA MIGRATION ENGINE (Bina Database Delete Kiye Naye Columns Add Karne Ke Liye)
+    # ⚡ AUTOMATIC DATA MIGRATION ENGINE (Updated with Telegram ID)
     staff_payroll_migrations = [
         ("staff", "ALTER TABLE staff ADD COLUMN pf_enabled INTEGER DEFAULT 0"),
         ("staff", "ALTER TABLE staff ADD COLUMN pf_percentage REAL DEFAULT 12.0"),
         ("staff", "ALTER TABLE staff ADD COLUMN available_cl INTEGER DEFAULT 12"),
+        # 👇 Nayi line yahan add kar di hai:
+        ("staff", "ALTER TABLE staff ADD COLUMN telegram_id TEXT"), 
+        
         ("attendance_rules", "ALTER TABLE attendance_rules ADD COLUMN late_fine_per_minute REAL DEFAULT 5.0"),
         ("staff_attendance", "ALTER TABLE staff_attendance ADD COLUMN late_fine REAL DEFAULT 0"),
         ("staff_attendance", "ALTER TABLE staff_attendance ADD COLUMN is_half_day INTEGER DEFAULT 0"),
@@ -319,19 +344,27 @@ app = Flask(__name__, static_folder=static_folder_path, static_url_path='/static
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 bcrypt = Bcrypt(app)
 
+# --- STARTUP HOOK UPDATE ---
 with app.app_context():
-    print("🔄 Initializing database...")
     init_db()
     init_expense_table()
-    print("✅ DATABASE INITIALIZED ON STARTUP!")
     
-    # Verify tables created
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = cursor.fetchall()
-    print(f"📋 Tables created: {[t[0] for t in tables]}")
-    conn.close()
+    # 🎯 TELEGRAM WEBHOOK AUTO-REGISTER (FIXED)
+try:
+    TOKEN = "8793915550:AAGK3RIR9PDQXkawoxaSp-69sfB5jge87A0"
+    # Railway hata kar Render ka URL daalo
+    WEBHOOK_URL = "https://abd-school-backend.onrender.com/webhook/" + TOKEN
+    
+    response = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}")
+    
+    if response.status_code == 200:
+        print("✅ Telegram Webhook auto-registered successfully to Render!")
+    else:
+        print(f"⚠️ Webhook registration failed with status: {response.status_code}")
+except Exception as e:
+    print("⚠️ Telegram Webhook Auto-register failed:", e)
+        
+    print("✅ DATABASE INITIALIZED ON STARTUP!")
 
 # --- ROUTES (Yahan se apne saare @app.route wale functions niche paste kar do) ---
 
@@ -428,12 +461,11 @@ def get_pending_students():
     return jsonify(student_list)
 
 
-# 🎯 LOCATION: submit_fee() ke poore block ko isse exact replace karein
 @app.route('/api/submit-fee-advanced', methods=['POST'])
 def submit_fee():
-    import traceback  # Terminal par exact line dhoondhne ke liye
+    import traceback 
     data = request.json
-    print("📥 Frontend Se Aaya Data:", data)  # Terminal par data check karne ke liye
+    print("📥 Frontend Se Aaya Data:", data)
 
     student_id = data.get('student_id')
     school_pay = float(data.get('school_pay', 0))
@@ -441,7 +473,6 @@ def submit_fee():
     
     receipt_no = str(data.get('receipt_no', '')).strip()
     next_due_date = str(data.get('next_due_date', '')).strip()
-    # 🎯 exact is tarah se badal dijiye bhai:
     today_str = datetime.now().date().strftime("%Y-%m-%d")
     
     if not receipt_no:
@@ -453,7 +484,7 @@ def submit_fee():
     cursor = conn.cursor()
     
     try:
-        # 1. Student balance table ko update karna
+        # 1. Update Student Balance
         print("🔄 Step 1: Updating student balance...")
         cursor.execute('''
             UPDATE students 
@@ -464,7 +495,7 @@ def submit_fee():
         
         total_paid_now = school_pay + transport_pay
         
-        # 2. Transactional table mein entry log karna
+        # 2. Log Transaction
         print("🔄 Step 2: Inserting into fee_transactions...")
         if total_paid_now > 0:
             cursor.execute('''
@@ -475,39 +506,36 @@ def submit_fee():
         conn.commit()
         print("✅ Step 3: Database Commit Successful!")
         
-        # 📱 AUTOMATED HINDI WHATSAPP INVOICE ALERT ENGINE (Safe Mode)
+        # 📱 TELEGRAM INVOICE ALERT ENGINE
         try:
-            print("🔄 Step 4: Fetching school and student info for WhatsApp...")
+            print("🔄 Step 4: Fetching info for Telegram Alert...")
             cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
             school_row = cursor.fetchone()
             school_name = school_row[0] if school_row else "Smart School ERP"
             
-            cursor.execute("SELECT name, parent_mobile FROM students WHERE id = ?", (student_id,))
+            cursor.execute("SELECT name FROM students WHERE id = ?", (student_id,))
             s_row = cursor.fetchone()
             
-            if s_row and s_row[1]:
-                student_name, mobile = s_row[0], s_row[1]
-                formatted_mobile = str(mobile).strip()
-                if not formatted_mobile.startswith('91') and len(formatted_mobile) == 10:
-                    formatted_mobile = f"91{formatted_mobile}"
+            if s_row:
+                student_name = s_row[0]
                 
-                hindi_whatsapp_msg = (
+                # Telegram Message Format
+                msg = (
                     f"🧾 *[फीस रसीद - {school_name.upper()}]*\n\n"
                     f"नमस्ते,\n\n"
                     f"🍁 *छात्र का नाम:* {student_name}\n"
                     f"🔢 *रसीद संख्या:* {receipt_no}\n"
-                    f"💰 *आज जमा की गई कुल राशि:* *₹{total_paid_now}*\n"
+                    f"💰 *कुल जमा राशि:* *₹{total_paid_now}*\n"
                     f"   - शैक्षणिक फीस: ₹{school_pay}\n"
                     f"   - वाहन/बस FEES: ₹{transport_pay}\n\n"
-                    f"⚠️ *अगली देय तिथि (Next Due):* {next_due_date}\n\n"
-                    f"आपके बच्चे की फीस सफलतापूर्वक अपडेट कर दी गई है। डिजिटल माध्यम से जुड़ने के लिए धन्यवाद।\n\n"
-                    f"_सॉफ्टवेयर MANAGER: A.B.Digital Work_"
+                    f"⚠️ *अगली देय तिथि:* {next_due_date}\n\n"
+                    f"_Powered by: A.B.Digital Work_"
                 )
                 
-                print("🚀 Step 5: Sending request to WhatsApp Bot...")
-                requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": hindi_whatsapp_msg}, timeout=5)
-        except Exception as whatsapp_err:
-            print(f"⚠️ WhatsApp Engine Skipped/Offline: {whatsapp_err}")
+                print("🚀 Step 5: Sending request to Telegram Bot...")
+                send_telegram_msg(msg) # ✅ TELEGRAM FUNCTION CALL
+        except Exception as tel_err:
+            print(f"⚠️ Telegram Engine Skipped/Offline: {tel_err}")
 
         conn.close()
         return jsonify({
@@ -518,12 +546,8 @@ def submit_fee():
 
     except Exception as main_err:
         print("\n❌❌❌ CRITICAL ERROR IN SUBMIT_FEE FUNCTION ❌❌❌")
-        traceback.print_exc()  # Yeh exact error line chhapega terminal par
-        print("--------------------------------------------------\n")
-        try:
-            conn.close()
-        except:
-            pass
+        traceback.print_exc()
+        if 'conn' in locals(): conn.close()
         return jsonify({"success": False, "error": str(main_err)}), 500
 
 # 📥 EXCEL / MANUAL BULK IMPORT API
@@ -708,11 +732,6 @@ def get_fees_class_report():
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
 
-
-# =====================================================================
-# 🔔 2. BULK AUTOMATED WHATSAPP REMINDER ENGINE WITH COOLDOWN PROTECTION
-# =====================================================================
-# 🔔 2. BULK AUTOMATED WHATSAPP REMINDER ENGINE
 @app.route('/api/payroll/send-bulk-fee-reminders', methods=['POST'])
 def send_bulk_fee_reminders():
     import time
@@ -733,34 +752,33 @@ def send_bulk_fee_reminders():
     
     for s_id in student_ids:
         try:
-            cursor.execute('SELECT name, parent_mobile, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ? AND status = "Active"', (s_id,))
+            cursor.execute('SELECT name, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ? AND status = "Active"', (s_id,))
             row = cursor.fetchone()
             if row:
-                student_name, mobile, pending_school, pending_trans = row
+                student_name, pending_school, pending_trans = row
                 total_due = pending_school + pending_trans
                 if total_due <= 0: continue
-                    
-                formatted_mobile = str(mobile).strip()
-                if not formatted_mobile.startswith('91') and len(formatted_mobile) == 10:
-                    formatted_mobile = f"91{formatted_mobile}"
-                    
-                whatsapp_message = f"🔔 *[फीस अनुस्मारक - {school_name.upper()}]*\n\nआदरणीय अभिभावक,\n\n{student_name} की फीस विवरण:\n📚 शैक्षणिक: ₹{pending_school}\n🚌 वाहन: ₹{pending_trans}\n\n💰 *कुल देय राशि:* *₹{total_due}*\n\n_System Powered by A.B.Digital Work_"
                 
-                response = requests.post('https://abd-school-backend-production.up.railway.app/send-message', 
-                                         json={"mobile": formatted_mobile, "message": whatsapp_message}, 
-                                         timeout=5)
+                # Telegram Message
+                telegram_msg = (
+                    f"🔔 *[फीस अनुस्मारक - {school_name.upper()}]*\n\n"
+                    f"आदरणीय अभिभावक,\n\n{student_name} की फीस विवरण:\n"
+                    f"📚 शैक्षणिक: ₹{pending_school}\n"
+                    f"🚌 वाहन: ₹{pending_trans}\n\n"
+                    f"💰 *कुल देय राशि:* *₹{total_due}*\n\n"
+                    f"_System Powered by A.B.Digital Work_"
+                )
                 
-                if response.status_code == 200:
-                    success_sent += 1
-                    time.sleep(3) # Safety cooldown
-                else:
-                    failed_sent += 1
-        except Exception as single_err:
-            print(f"⚠️ Error: {single_err}")
+                # ✅ Telegram function call
+                send_telegram_msg(telegram_msg)
+                success_sent += 1
+                time.sleep(1) # Cooldown
+        except Exception as e:
+            print(f"⚠️ Telegram Bulk Error: {e}")
             failed_sent += 1
             
     conn.close()
-    return jsonify({"success": True, "message": f"🎉 {success_sent} Reminders sent, {failed_sent} failed."})
+    return jsonify({"success": True, "message": f"🎉 {success_sent} Reminders Telegram par bhej diye gaye!"})
 
 # 📲 INSTANT WHATSAPP FEE REMINDER API (Fixed Indentation)
 @app.route('/api/fee-reminder', methods=['POST'])
@@ -772,27 +790,24 @@ def send_fee_reminder():
     cursor = conn.cursor()
     cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
     school_name = cursor.fetchone()[0]
-    cursor.execute('SELECT name, parent_mobile, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ?', (student_id,))
+    cursor.execute('SELECT name, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ?', (student_id,))
     row = cursor.fetchone()
     conn.close()
     
     if row:
-        student_name, mobile, pending_school, pending_trans = row
+        student_name, pending_school, pending_trans = row
         total_due = pending_school + pending_trans
-        formatted_mobile = f"91{mobile}" if not mobile.startswith('91') else mobile
-        whatsapp_message = f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\nNamaste {student_name}, Total Outstanding: *₹{total_due}*"
+        
+        # Telegram Message
+        msg = f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\nNamaste {student_name},\n\nTotal Outstanding: *₹{total_due}*\n\n_Powered by A.B.Digital Work_"
         
         try:
-            # TRY BLOCK KE ANDAR HI IF CONDITION RAKHNA HAI
-            response = requests.post('https://abd-school-backend-production.up.railway.app/send-message', 
-                                     json={"mobile": formatted_mobile, "message": whatsapp_message}, 
-                                     timeout=5)
-            if response.json().get('success'):
-                return jsonify({"success": True, "message": "🎉 Reminder instantly sent!"})
-            else:
-                return jsonify({"success": False, "message": "Bot failed to send!"})
+            # ✅ Telegram function call
+            send_telegram_msg(msg)
+            return jsonify({"success": True, "message": "🎉 Reminder instantly sent to Telegram!"})
         except Exception as e:
-            return jsonify({"success": False, "message": "Bot Server Offline!"})
+            return jsonify({"success": False, "message": "Telegram Bot Offline!"})
+            
     return jsonify({"success": False, "message": "Record not found!"})
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -870,36 +885,22 @@ def login():
 def send_verification():
     global verification_store
     data = request.json
-    username = data.get('username')
-    
-    if username:
-        username = username.strip().lower()
+    username = data.get('username', '').strip().lower()
     
     if username == "admin":
         otp = str(random.randint(100000, 999999))
         verification_store['admin'] = otp
         
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT school_mobile FROM school_settings WHERE id = 1")
-        row = cursor.fetchone()
-        admin_mobile = row[0] if row else "9893260067"
-        conn.close()
-        
-        formatted_mobile = f"91{admin_mobile}" if not admin_mobile.startswith('91') else admin_mobile
+        # 🔐 OTP Message taiyaar kiya
         message = f"🔐 *[SECURITY ALERT]*\n\nYour Smart School ERP verification OTP is: *{otp}*\n\nValid for 5 minutes."
         
-        # ✅ GLOBAL URL USE KARO
-        try:
-            res = requests.post(WHATSAPP_BOT_URL, json={"mobile": formatted_mobile, "message": message}, timeout=5)
-            if res.status_code == 200:
-                return jsonify({"success": True, "message": "🎉 OTP sent to WhatsApp!"})
-            else:
-                print(f"WhatsApp bot error: {res.status_code}")
-                return jsonify({"success": False, "message": "WhatsApp bot error!"})
-        except Exception as e:
-            print(f"WhatsApp exception: {e}")
-            return jsonify({"success": False, "message": "WhatsApp bot offline!"})
+        # ✅ Telegram function call kiya
+        send_telegram_msg(message)
+        
+        return jsonify({
+            "success": True, 
+            "message": "🎉 OTP tumhare Telegram par bhej diya gaya hai!"
+        })
     
     return jsonify({"success": False, "message": "User nahi mila!"})
 
@@ -1345,9 +1346,9 @@ def mark_staff_attendance():
         whatsapp_msg += f"_Powered by: A.B.Digital Work_"
         
         try:
-            requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
-        except Exception as wa_err:
-            print("⚠️ WhatsApp alert system pipeline offline:", wa_err)
+            send_telegram_msg(whatsapp_msg)
+        except Exception as e:
+            print(f"⚠️ Telegram alert error: {e}")
             
         return jsonify({"success": True, "message": f"Campus Entry Complete! Status: {status}"})
 
@@ -1383,12 +1384,11 @@ def mark_staff_attendance():
             f"Thank you for your valuable services today! Have a safe journey home. 🙏\n"
             f"_Powered by: A.B.Digital Work_"
         )
+        # EXIT wale block mein ye likho:
         try:
-            requests.post('https://abd-school-backend-production.up.railway.app/send-message', json={"mobile": formatted_mobile, "message": whatsapp_msg}, timeout=2)
-        except Exception as wa_err:
-            print("⚠️ WhatsApp exit pipeline offline:", wa_err)
-            
-        return jsonify({"success": True, "message": "Campus Exit Logged Successfully!"})
+            send_telegram_msg(whatsapp_msg)
+        except Exception as e:
+            print(f"⚠️ Telegram Error: {e}")
     
 # ==================== 📍 QR ATTENDANCE APIs (YAHAN SE PASTE KARO) ====================
 
@@ -1493,6 +1493,8 @@ def mark_qr_attendance():
 # 🗓️ 1. TODAY'S ATTENDANCE DIRECTORY ROUTE
 @app.route('/api/payroll/today-report', methods=['GET'])
 def get_today_payroll_report():
+    # Sahi tarika:
+    today_str = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -2247,36 +2249,73 @@ def submit_attendance():
         
         conn.commit()
         
-        # 2. WhatsApp Trigger (Agar absent bachhe hain)
+        # 2. Telegram Trigger (Agar absent bachhe hain)
         if absent_student_ids:
             cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
             school_name = cursor.fetchone()[0] if cursor.fetchone() else "Smart School ERP"
             
             placeholders = ', '.join(['?'] * len(absent_student_ids))
-            cursor.execute(f"SELECT name, parent_mobile FROM students WHERE id IN ({placeholders})", absent_student_ids)
+            cursor.execute(f"SELECT name FROM students WHERE id IN ({placeholders})", absent_student_ids)
             
-            # WhatsApp URL
-            BOT_URL = 'https://abd-school-backend-production.up.railway.app/send-message'
-            
-            for name, mobile in cursor.fetchall():
-                if mobile:
-                    msg = f"🧾 *[अनुपस्थिति सूचना - {school_name.upper()}]*\nनमस्ते, {name} आज स्कूल में अनुपस्थित (ABSENT) है।"
-                    try:
-                        # FIXED: URL aur single requests.post call
-                        requests.post(BOT_URL, json={
-                            "mobile": f"91{str(mobile).strip()[-10:]}", 
-                            "message": msg
-                        }, timeout=5)
-                    except Exception as e:
-                        print(f"WhatsApp Error: {e}")
+            for (name,) in cursor.fetchall():
+                msg = f"🧾 *[अनुपस्थिति सूचना - {school_name.upper()}]*\nनमस्ते, *{name}* आज स्कूल में अनुपस्थित (ABSENT) है।"
+                try:
+                    # ✅ TELEGRAM CALL (No Railway URL needed)
+                    send_telegram_msg(msg)
+                except Exception as e:
+                    print(f"⚠️ Telegram Alert Error: {e}")
         
         conn.close()
-        return jsonify({"message": "Attendance save ho gayi!"}), 200
+        return jsonify({"message": "Attendance save ho gayi aur Telegram par alert bhej diya gaya!"}), 200
         
     except Exception as e:
         if 'conn' in locals(): conn.close()
         return jsonify({"error": str(e)}), 500
 
+# Telegram Bot API Token
+TELEGRAM_TOKEN = "8793915550:AAGK3RIR9PDQXkawoxaSp-69sfB5jge87A0"
+
+@app.route('/webhook/8793915550:AAGK3RIR9PDQXkawoxaSp-69sfB5jge87A0', methods=['POST'])
+def telegram_webhook():
+    update = request.json
+    if 'message' in update:
+        chat_id = update['message']['chat']['id']
+        text = update['message'].get('text', '')
+        
+        # 🤖 Tumhara Command Logic
+        if text.lower() == "/start":
+            reply = "Namaste! Main tumhara Smart School ERP Assistant hoon. Main tumhari madad kar sakta hoon."
+            requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={chat_id}&text={reply}")
+            
+        elif text.lower() == "/dashboard":
+            # Yahan tum dashboard-stats fetch karke uska summary bhej sakte ho
+            reply = "Dashboard Summary: Total Students - 50, Pending Fees - ₹20,000"
+            requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={chat_id}&text={reply}")
+
+    return jsonify({"status": "ok"}), 200
+
+@app.route('/api/link-telegram', methods=['POST'])
+def link_telegram():
+    data = request.json
+    phone = str(data.get('phone')).strip()
+    telegram_id = str(data.get('telegram_id')).strip()
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Database mein number search karke ID save karo
+    cursor.execute("UPDATE students SET parent_telegram_id = ? WHERE parent_mobile = ?", (telegram_id, phone))
+    
+    if cursor.rowcount > 0:
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "🎉 Aapka Telegram account link ho gaya hai!"})
+    else:
+        conn.close()
+        return jsonify({"success": False, "error": "❌ Number hamare record mein nahi mila!"})
+
+# 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    # Render automatically PORT variable provide karta hai
+    port = int(os.environ.get('PORT', 10000)) 
     app.run(host='0.0.0.0', port=port)

@@ -1,7 +1,6 @@
-flask
+flask==3.0.0
 flask-cors
 gunicorn
-mysql-connector-python
 pyjwt
 requests
 flask-bcrypt
