@@ -5,3 +5,6 @@ pyjwt
 requests
 flask-bcrypt
 pydantic
+psycopg2-binary
+pandas          # ✅ YEH ADD KARO
+openpyxl        # ✅ YEH ADD KARO
