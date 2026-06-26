@@ -1,4 +1,4 @@
-import sqlite3
+
 import random
 import jwt
 import requests
@@ -6,15 +6,39 @@ import os
 import re
 import traceback
 import time
+import psycopg2
+import psycopg2.extras
+from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
 from datetime import datetime
 
-# --- DATABASE PATH ---
-# Render ke liye simple local path use karo
-DB_NAME = "school.db"
+# --- DATABASE CONFIGURATION (PostgreSQL for Render, SQLite for Local) ---
+DB_NAME = "school.db"  # SQLite fallback for local development
+DATABASE_URL = os.environ.get('DATABASE_URL')  # Render PostgreSQL URL
+
+def execute_query(cursor, query, params=()):
+    """Execute query with proper placeholders for SQLite or PostgreSQL"""
+    if DATABASE_URL:
+        # PostgreSQL uses %s
+        query = query.replace('?', '%s')
+        cursor.execute(query, params)
+    else:
+        # SQLite uses ?
+        cursor.execute(query, params)
+
+def get_db_connection():
+    """Returns a database connection (PostgreSQL on Render, SQLite locally)"""
+    if DATABASE_URL:
+        # PostgreSQL connection for Render (Permanent)
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = False
+        return conn
+    else:
+        # SQLite connection for local development
+        return sqlite3.connect(DB_NAME)  # ← YEH SAHI HAI
 
 # --- MISSING VARIABLES (YAHAN ADD KARO) ---
 verification_store = {}
@@ -37,13 +61,17 @@ def send_telegram_msg(text):
         print(f"Telegram Bot Error: {e}")
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
+    # =====================================================================
+    # 🔥 ALL TABLES WITH POSTGRESQL SYNTAX (SERIAL PRIMARY KEY)
+    # =====================================================================
+    
     # 1. Users Table
-    cursor.execute('''
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role TEXT NOT NULL
@@ -51,9 +79,9 @@ def init_db():
     ''')
     
     # 2. Advanced School Settings Table
-    cursor.execute('''
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS school_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             school_name TEXT NOT NULL,
             school_address TEXT,
             school_email TEXT,
@@ -63,10 +91,10 @@ def init_db():
         )
     ''')
     
-    # 3. Upgraded Students Table (Samagra ID, Bank Details aur Admission Fields Ke Sath)
-    cursor.execute('''
+    # 3. Upgraded Students Table (Complete)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             admission_no TEXT UNIQUE NOT NULL,
             roll_no TEXT,
             name TEXT NOT NULL,
@@ -90,32 +118,31 @@ def init_db():
             ifsc_code TEXT,
             next_due_date TEXT,
             fee_cycle TEXT DEFAULT 'Annual',
-            status TEXT DEFAULT 'Active'
+            status TEXT DEFAULT 'Active',
+            parent_telegram_id TEXT,
+            cycle_fee_amount REAL DEFAULT 0,
+            stream TEXT DEFAULT ''
         )
     ''')
     
-    # YAHAN PASTE KARO: Naya Column Migration
-    try:
-        cursor.execute("ALTER TABLE students ADD COLUMN parent_telegram_id TEXT")
-        conn.commit()
-        print("✅ Column 'parent_telegram_id' added successfully!")
-    except sqlite3.OperationalError:
-        pass # Column pehle se hai toh ignore karo
-    
-    # 4. Expenses (Kharcha) Table
-    cursor.execute('''
+    # 4. Expenses Table (Updated with all fields)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
             amount REAL NOT NULL,
-            purpose TEXT NOT NULL,
-            date TEXT NOT NULL
+            date TEXT NOT NULL,
+            payment_mode TEXT NOT NULL,
+            vendor_name TEXT,
+            remarks TEXT
         )
     ''')
     
-    # 5. Fee Collection Logs (Daily tracking ke liye Upgraded)
-    cursor.execute('''
+    # 5. Fee Collection Logs (Complete)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS fee_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             receipt_no TEXT UNIQUE,
             student_id INTEGER,
             amount_paid REAL,
@@ -126,128 +153,67 @@ def init_db():
         )
     ''')
     
-    # Default Admin Check
-    cursor.execute("SELECT * FROM users WHERE username = ?", ("admin",))
-    if not cursor.fetchone():
-        hashed_pw = bcrypt.generate_password_hash("admin123").decode('utf-8')
-        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", ("admin", hashed_pw, "Admin"))
-            
-    # Default Settings Check
-    cursor.execute("SELECT * FROM school_settings WHERE id = 1")
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO school_settings (id, school_name, school_address, school_email, school_mobile, school_logo, school_signature) 
-            VALUES (1, 'Smart School ERP', 'Madhya Pradesh, India', 'admin@school.com', '9893260067', NULL, NULL)
-        ''')
-
-    # 💾 Database Save State
-    conn.commit()
-    
-    # ⚡ FORCED DATABASE MIGRATION ENGINE (Zabardasti missing columns inject karne ke liye)
-    migration_queries = [
-        ("students", "ALTER TABLE students ADD COLUMN cycle_fee_amount REAL DEFAULT 0"),
-        ("fee_transactions", "ALTER TABLE fee_transactions ADD COLUMN receipt_no TEXT"),
-        ("fee_transactions", "ALTER TABLE fee_transactions ADD COLUMN school_pay REAL DEFAULT 0"),
-        ("fee_transactions", "ALTER TABLE fee_transactions ADD COLUMN transport_pay REAL DEFAULT 0"),
-        ("fee_transactions", "ALTER TABLE fee_transactions ADD COLUMN next_due_date TEXT")
-    ]
-    
-    for table, query in migration_queries:
-        try:
-            cursor.execute(query)
-            conn.commit()
-            print(f"✅ Column successfully verified/added via query: {query}")
-        except sqlite3.OperationalError as e:
-            # Agar column duplicate bole toh safe skip, baki errors bypass
-            pass
-        
-    # === STAFF ATTENDANCE & PAYROLL MATRIX TABLES ===
-    # 6. Staff Directory Table
-    cursor.execute('''
+    # 6. Staff Directory Table (Complete with all columns)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS staff (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             designation TEXT,
             mobile TEXT NOT NULL,
             base_salary REAL DEFAULT 0,
-            status TEXT DEFAULT 'Active'
+            status TEXT DEFAULT 'Active',
+            pf_enabled INTEGER DEFAULT 0,
+            pf_percentage REAL DEFAULT 12.0,
+            available_cl INTEGER DEFAULT 12,
+            telegram_id TEXT,
+            device_token TEXT
         )
     ''')
     
-    # 7. Attendance Rules Table (Dynamic Time & Geo-location bounds)
-    cursor.execute('''
+    # 7. Attendance Rules Table (Complete)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS attendance_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             school_latitude REAL NOT NULL DEFAULT 24.7432,
             school_longitude REAL NOT NULL DEFAULT 78.8561,
             allowed_radius_meters REAL DEFAULT 50.0,
             shift_start_time TEXT DEFAULT '08:00',
             late_buffer_minutes INTEGER DEFAULT 15,
-            shift_end_time TEXT DEFAULT '14:00'
+            shift_end_time TEXT DEFAULT '14:00',
+            late_fine_per_minute REAL DEFAULT 5.0
         )
     ''')
     
-    # Default Rule Entry Check
-    cursor.execute("SELECT * FROM attendance_rules WHERE id = 1")
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO attendance_rules (id, school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time)
-            VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
-        ''')
-
-    # 8. Geo-Attendance Logs Table (Max 2 transactions/day limit)
-    cursor.execute('''
+    # 8. Geo-Attendance Logs Table (Complete)
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS staff_attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             staff_id INTEGER,
             date TEXT NOT NULL,
             check_in_time TEXT,
             check_out_time TEXT,
             status TEXT,
+            late_fine REAL DEFAULT 0,
+            is_half_day INTEGER DEFAULT 0,
+            leave_type TEXT DEFAULT 'Present',
             FOREIGN KEY(staff_id) REFERENCES staff(id)
         )
     ''')
-
-    conn.commit()
-
-    # ⚡ AUTOMATIC DATA MIGRATION ENGINE (Updated with Telegram ID)
-    staff_payroll_migrations = [
-        ("staff", "ALTER TABLE staff ADD COLUMN pf_enabled INTEGER DEFAULT 0"),
-        ("staff", "ALTER TABLE staff ADD COLUMN pf_percentage REAL DEFAULT 12.0"),
-        ("staff", "ALTER TABLE staff ADD COLUMN available_cl INTEGER DEFAULT 12"),
-        # 👇 Nayi line yahan add kar di hai:
-        ("staff", "ALTER TABLE staff ADD COLUMN telegram_id TEXT"), 
-        
-        ("attendance_rules", "ALTER TABLE attendance_rules ADD COLUMN late_fine_per_minute REAL DEFAULT 5.0"),
-        ("staff_attendance", "ALTER TABLE staff_attendance ADD COLUMN late_fine REAL DEFAULT 0"),
-        ("staff_attendance", "ALTER TABLE staff_attendance ADD COLUMN is_half_day INTEGER DEFAULT 0"),
-        ("staff_attendance", "ALTER TABLE staff_attendance ADD COLUMN leave_type TEXT DEFAULT 'Present'")
-    ]
     
-    for table_name, migration_query in staff_payroll_migrations:
-        try:
-            cursor.execute(migration_query)
-            conn.commit()
-            print(f"✅ Matrix Migration Successful: Column injected via query [{migration_query}]")
-        except sqlite3.OperationalError:
-            # Agar column pehle se database me hai, toh safe skip bina crash kiye
-            pass
-        
-    # === 🏫 CLASS MANAGEMENT ACADEMIC FRAMEWORK TABLES ===
     # 9. Master Classes Table
-    cursor.execute('''
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS classes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_name TEXT NOT NULL UNIQUE,
             room_number TEXT,
             max_capacity INTEGER DEFAULT 40
         )
     ''')
     
-    # 10. Sections Table (Linked to Class)
-    cursor.execute('''
+    # 10. Sections Table
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS sections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_id INTEGER,
             section_name TEXT NOT NULL,
             class_teacher_id INTEGER,
@@ -256,9 +222,9 @@ def init_db():
     ''')
     
     # 11. Subjects Table
-    cursor.execute('''
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS subjects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_id INTEGER,
             subject_name TEXT NOT NULL,
             subject_teacher_id INTEGER,
@@ -266,17 +232,16 @@ def init_db():
         )
     ''')
     
-    # === 📅 CLASS TIMETABLE ROUTINE MATRIX TABLE ===
-    # 12. Timetable Schedule Master (Relational System synced with A.B.Digital Work framework)
-    cursor.execute('''
+    # 12. Timetable Schedule Master
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS timetables (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             class_id INTEGER,
-            section_name TEXT NOT NULL, -- A, B, C
-            day_of_week TEXT NOT NULL,   -- Monday, Tuesday...
-            period_number INTEGER NOT NULL, -- Period 1, 2, 3...
-            start_time TEXT,             -- e.g., '08:00'
-            end_time TEXT,               -- e.g., '08:45'
+            section_name TEXT NOT NULL,
+            day_of_week TEXT NOT NULL,
+            period_number INTEGER NOT NULL,
+            start_time TEXT,
+            end_time TEXT,
             subject_id INTEGER,
             teacher_id INTEGER,
             FOREIGN KEY(class_id) REFERENCES classes(id),
@@ -285,55 +250,167 @@ def init_db():
         )
     ''')
     
-    # Attendance ki table ka code (Yeh pehle se sahi hai):
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS attendance_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        class_name TEXT NOT NULL,
-        section_name TEXT NOT NULL,
-        date TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('Present', 'Absent', 'Late', 'Leave')),
-        marked_by TEXT DEFAULT 'Teacher',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-        UNIQUE (student_id, date)
-    );
-    """)
+    # 13. Attendance Records (Complete)
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS attendance_records (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            class_name TEXT NOT NULL,
+            section_name TEXT NOT NULL,
+            date TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('Present', 'Absent', 'Late', 'Leave')),
+            marked_by TEXT DEFAULT 'Teacher',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+            UNIQUE (student_id, date)
+        )
+    ''')
+    
+    # 14. Holidays Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS holidays (
+            id SERIAL PRIMARY KEY,
+            holiday_name TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 15. QR Attendance Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS qr_attendance (
+            id SERIAL PRIMARY KEY,  
+            teacher_id TEXT NOT NULL,
+            teacher_name TEXT NOT NULL,
+            teacher_subject TEXT,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            latitude REAL,
+            longitude REAL,
+            distance INTEGER,
+            status TEXT,
+            marked_at TEXT
+        )
+    ''')
+    
+    # 16. Staff Advance Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS staff_advance (
+            id SERIAL PRIMARY KEY,
+            staff_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            purpose TEXT,
+            date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     conn.commit()
-    print("Attendance table checked/created successfully!")
     
-    # 🎯 NEW: Holidays Table Ka Sahi Python Format Code Yahan Rakhein:
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS holidays (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        holiday_name TEXT NOT NULL,
-        start_date TEXT NOT NULL,
-        end_date TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    conn.commit()
-    print("Holidays table checked/created successfully!")
+        # =====================================================================
+    # 🔥 FORCE ADD MISSING COLUMNS (For existing databases)
+    # =====================================================================
     
-    # Students table me Stream mapping dynamic migration tracking trigger
+    # Students table missing columns
     try:
-        cursor.execute("ALTER TABLE students ADD COLUMN stream TEXT DEFAULT ''")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-            
-    # 🔒 Safely close the connection
+        execute_query(cursor, "ALTER TABLE students ADD COLUMN IF NOT EXISTS cycle_fee_amount REAL DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_telegram_id TEXT")
+        execute_query(cursor, "ALTER TABLE students ADD COLUMN IF NOT EXISTS stream TEXT DEFAULT ''")
+    except Exception as e:
+        print(f"⚠️ Students columns already exist or error: {e}")
+        
+    # Staff table missing columns - Add these
+    try:
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS roll TEXT DEFAULT 'Teacher'")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS subject TEXT")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS class_teacher TEXT")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS assigned_class TEXT")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS assigned_section TEXT")
+    except Exception as e:
+        print(f"⚠️ Staff columns already exist or error: {e}")
+    
+    # Staff table missing columns
+    try:
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS device_token TEXT")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS pf_enabled INTEGER DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS pf_percentage REAL DEFAULT 12.0")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS available_cl INTEGER DEFAULT 12")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS telegram_id TEXT")
+        execute_query(cursor, "ALTER TABLE staff ADD COLUMN IF NOT EXISTS password TEXT")
+    except Exception as e:
+        print(f"⚠️ Staff columns already exist or error: {e}")
+    
+    # Attendance rules missing columns
+    try:
+        execute_query(cursor, "ALTER TABLE attendance_rules ADD COLUMN IF NOT EXISTS late_fine_per_minute REAL DEFAULT 5.0")
+    except Exception as e:
+        print(f"⚠️ Attendance rules columns already exist or error: {e}")
+    
+    # Staff attendance missing columns
+    try:
+        execute_query(cursor, "ALTER TABLE staff_attendance ADD COLUMN IF NOT EXISTS late_fine REAL DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE staff_attendance ADD COLUMN IF NOT EXISTS is_half_day INTEGER DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE staff_attendance ADD COLUMN IF NOT EXISTS leave_type TEXT DEFAULT 'Present'")
+    except Exception as e:
+        print(f"⚠️ Staff attendance columns already exist or error: {e}")
+    
+    # Fee transactions missing columns
+    try:
+        execute_query(cursor, "ALTER TABLE fee_transactions ADD COLUMN IF NOT EXISTS receipt_no TEXT")
+        execute_query(cursor, "ALTER TABLE fee_transactions ADD COLUMN IF NOT EXISTS school_pay REAL DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE fee_transactions ADD COLUMN IF NOT EXISTS transport_pay REAL DEFAULT 0")
+        execute_query(cursor, "ALTER TABLE fee_transactions ADD COLUMN IF NOT EXISTS next_due_date TEXT")
+    except Exception as e:
+        print(f"⚠️ Fee transactions columns already exist or error: {e}")
+    
+    # =====================================================================
+    # 🔥 DEFAULT DATA (Admin, Settings, Rules)
+    # =====================================================================
+    
+    # Default Admin Check
+    execute_query(cursor, "SELECT * FROM users WHERE username = %s", ("admin",))
+    if not cursor.fetchone():
+        hashed_pw = bcrypt.generate_password_hash("admin123").decode('utf-8')
+        execute_query("INSERT INTO users (username, password, role) VALUES (%s, %s, %s)", ("admin", hashed_pw, "Admin"))
+    
+    # Default Settings Check
+    execute_query(cursor, "SELECT * FROM school_settings WHERE id = 1")
+    if not cursor.fetchone():
+        execute_query(cursor, '''
+            INSERT INTO school_settings (id, school_name, school_address, school_email, school_mobile, school_logo, school_signature) 
+            VALUES (1, 'Smart School ERP', 'Madhya Pradesh, India', 'admin@school.com', '9893260067', NULL, NULL)
+        ''')
+    
+    # Default Rule Entry Check
+    execute_query(cursor, "SELECT * FROM attendance_rules WHERE id = 1")
+    if not cursor.fetchone():
+        execute_query(cursor, '''
+            INSERT INTO attendance_rules (id, school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time)
+            VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
+        ''')
+    
+    conn.commit()
     conn.close()
     print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
 
 
 def init_expense_table():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS expenses")
-    cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, category TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, payment_mode TEXT NOT NULL, vendor_name TEXT, remarks TEXT)''')
+    
+    execute_query(cursor, "DROP TABLE IF EXISTS expenses")  # ← cursor add kiya
+    execute_query(cursor, '''CREATE TABLE IF NOT EXISTS expenses (
+        id SERIAL PRIMARY KEY, 
+        title TEXT NOT NULL, 
+        category TEXT NOT NULL, 
+        amount REAL NOT NULL, 
+        date TEXT NOT NULL, 
+        payment_mode TEXT NOT NULL, 
+        vendor_name TEXT, 
+        remarks TEXT
+    )''')
+    
     conn.commit()
     conn.close()
 
@@ -391,32 +468,32 @@ def calculate_distance_meters(lat1, lon1, lat2, lon2):
 # 📊 1. GET DASHBOARD STATS API (EGADAM CLEAN & ZERO DEFAULT)
 @app.route('/api/dashboard-stats', methods=['GET'])
 def get_dashboard_stats():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     # 🎯 EXACT IS TARAH BADAL DIJIYE BHAI:
     today_str = datetime.now().date().strftime("%Y-%m-%d")
     
     # Kul Chatra Count
-    cursor.execute("SELECT COUNT(*) FROM students WHERE status = 'Active'")
+    execute_query(cursor, "SELECT COUNT(*) FROM students WHERE status = 'Active'")
     total_students = cursor.fetchone()[0] or 0
     
     # Kul Fees Target (School + Transport)
-    cursor.execute("SELECT SUM(school_fee_total + transport_fee_total) FROM students WHERE status = 'Active'")
+    execute_query(cursor, "SELECT SUM(school_fee_total + transport_fee_total) FROM students WHERE status = 'Active'")
     total_fees_target = cursor.fetchone()[0] or 0
     
     # Kul Jama (School + Transport)
-    cursor.execute("SELECT SUM(school_fee_paid + transport_fee_paid) FROM students WHERE status = 'Active'")
+    execute_query(cursor, "SELECT SUM(school_fee_paid + transport_fee_paid) FROM students WHERE status = 'Active'")
     total_fees_paid = cursor.fetchone()[0] or 0
     
     # Aaj Ki Jama from live transactions table
-    cursor.execute("SELECT SUM(amount_paid) FROM fee_transactions WHERE date = ?", (today_str,))
+    execute_query(cursor, "SELECT SUM(amount_paid) FROM fee_transactions WHERE date = ?", (today_str,))
     today_fees_paid = cursor.fetchone()[0] or 0
     
     # Kul Bakaya calculation
     total_pending = total_fees_target - total_fees_paid
     
     # Kul Kharcha
-    cursor.execute("SELECT SUM(amount) FROM expenses")
+    execute_query(cursor, "SELECT SUM(amount) FROM expenses")
     total_expenses = cursor.fetchone()[0] or 0
     
     # Kul Aamdani
@@ -436,15 +513,15 @@ def get_dashboard_stats():
 # 📉 MOST PENDING FEE STUDENTS LIST API (High Pending First Sorting Logic)
 @app.route('/api/pending-students', methods=['GET'])
 def get_pending_students():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT id, name, class, section, parent_mobile, 
                school_fee_total, school_fee_paid, 
                transport_fee_total, transport_fee_paid,
                ((school_fee_total + transport_fee_total) - (school_fee_paid + transport_fee_paid)) as total_pending
         FROM students
-        WHERE total_pending > 0
+        WHERE ((school_fee_total + transport_fee_total) - (school_fee_paid + transport_fee_paid)) > 0
         ORDER BY total_pending DESC
     ''')
     rows = cursor.fetchall()
@@ -480,25 +557,33 @@ def submit_fee():
     if not next_due_date:
         next_due_date = today_str
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        # 1. Update Student Balance
+                # 1. Update Student Balance
         print("🔄 Step 1: Updating student balance...")
-        cursor.execute('''
-            UPDATE students 
-            SET school_fee_paid = school_fee_paid + ?, 
-                transport_fee_paid = transport_fee_paid + ? 
-            WHERE id = ?
-        ''', (school_pay, transport_pay, student_id))
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                UPDATE students 
+                SET school_fee_paid = school_fee_paid + %s, 
+                    transport_fee_paid = transport_fee_paid + %s 
+                WHERE id = %s
+            ''', (school_pay, transport_pay, student_id))
+        else:
+            execute_query(cursor, '''
+                UPDATE students 
+                SET school_fee_paid = school_fee_paid + ?, 
+                    transport_fee_paid = transport_fee_paid + ? 
+                WHERE id = ?
+            ''', (school_pay, transport_pay, student_id))
         
         total_paid_now = school_pay + transport_pay
         
         # 2. Log Transaction
         print("🔄 Step 2: Inserting into fee_transactions...")
         if total_paid_now > 0:
-            cursor.execute('''
+            execute_query(cursor,'''
                 INSERT INTO fee_transactions (receipt_no, student_id, amount_paid, school_pay, transport_pay, next_due_date, date) 
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (receipt_no, student_id, total_paid_now, school_pay, transport_pay, next_due_date, today_str))
@@ -509,11 +594,11 @@ def submit_fee():
         # 📱 TELEGRAM INVOICE ALERT ENGINE
         try:
             print("🔄 Step 4: Fetching info for Telegram Alert...")
-            cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
+            execute_query(cursor, "SELECT school_name FROM school_settings WHERE id = 1")
             school_row = cursor.fetchone()
             school_name = school_row[0] if school_row else "Smart School ERP"
             
-            cursor.execute("SELECT name FROM students WHERE id = ?", (student_id,))
+            execute_query(cursor, "SELECT name FROM students WHERE id = ?", (student_id,))
             s_row = cursor.fetchone()
             
             if s_row:
@@ -560,14 +645,14 @@ def bulk_import_students():
         if not students_list:
             return jsonify({"error": "Data khali hai!"}), 400
             
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         success_count = 0
         for s in students_list:
             try:
                 # Excel/Form columns mapping safely
-                cursor.execute('''
+                execute_query(cursor, '''
                     INSERT INTO students (
                         admission_no, roll_no, name, class, section, dob, gender, category,
                         aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
@@ -597,8 +682,11 @@ def bulk_import_students():
                     s.get('IFSC Code', s.get('ifsc_code', ''))
                 ))
                 success_count += 1
-            except sqlite3.IntegrityError:
-                continue # Duplicate admission number bypass
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                    continue
+                # Baaki errors ke liye raise karo
+                raise e
                 
         conn.commit()
         conn.close()
@@ -606,81 +694,223 @@ def bulk_import_students():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     
-# 📸 MANUAL REGISTRATION WITH BINARY PHOTO UPLOADER ENGINE
+# =====================================================================
+# 📦 NEW: ZIP BULK IMPORT WITH PHOTOS API (NAYA - YE ADD KARO)
+# =====================================================================
+@app.route('/api/students/bulk-import-with-photos', methods=['POST'])
+def bulk_import_with_photos():
+    import zipfile
+    import tempfile
+    import shutil
+    import pandas as pd
+    
+    try:
+        zip_file = request.files.get('zip_file')
+        if not zip_file:
+            return jsonify({"error": "ZIP file nahi mila!"}), 400
+        
+        # Temporary folder banao
+        temp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(temp_dir, 'upload.zip')
+        zip_file.save(zip_path)
+        
+        # ZIP extract karo
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        
+        # Excel file dhundo
+        excel_file = None
+        for f in os.listdir(temp_dir):
+            if f.endswith(('.xlsx', '.xls', '.csv')):
+                excel_file = os.path.join(temp_dir, f)
+                break
+        
+        if not excel_file:
+            shutil.rmtree(temp_dir)
+            return jsonify({"error": "Excel file ZIP mein nahi mili!"}), 400
+        
+        # Excel read karo
+        df = pd.read_excel(excel_file)
+        students_list = df.to_dict('records')
+        
+        # Photos folder dhundo
+        photos_folder = os.path.join(temp_dir, 'photos')
+        if not os.path.exists(photos_folder):
+            photos_folder = temp_dir
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        success_count = 0
+        for s in students_list:
+            try:
+                roll_no = str(s.get('Roll No', s.get('roll_no', '')))
+                student_class = str(s.get('Class', s.get('student_class', '')))
+                section = str(s.get('Section', s.get('section', 'A')))
+                
+                # ✅ PHOTO COPY KARO AGAR MILTI HAI
+                photo_filename = f"{roll_no}.jpg"
+                photo_path = os.path.join(photos_folder, photo_filename)
+                
+                # Agar .jpg na mile to .png try karo
+                if not os.path.exists(photo_path):
+                    photo_path = os.path.join(photos_folder, f"{roll_no}.png")
+                
+                if os.path.exists(photo_path):
+                    upload_folder = os.path.join(os.path.dirname(__file__), 'static', 'student_photos')
+                    folder_name = f"{student_class}_{section}"
+                    target_folder = os.path.join(upload_folder, folder_name)
+                    
+                    if not os.path.exists(target_folder):
+                        os.makedirs(target_folder)
+                    
+                    shutil.copy(photo_path, os.path.join(target_folder, f"{roll_no}.jpg"))
+                    print(f"📸 Photo copied: {roll_no}.jpg")
+                
+                # Database Insertion
+                execute_query(cursor, '''
+                    INSERT INTO students (
+                        admission_no, roll_no, name, class, section, dob, gender, category,
+                        aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
+                        fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    str(s.get('Admission No', s.get('admission_no', ''))), 
+                    str(s.get('Roll No', s.get('roll_no', ''))), 
+                    s.get('Student Name', s.get('name', '')),
+                    s.get('Class', s.get('student_class', '')), 
+                    s.get('Section', s.get('section', 'A')), 
+                    s.get('DOB', s.get('dob', '')), 
+                    s.get('Gender', s.get('gender', 'Male')),
+                    s.get('Category', s.get('category', 'General')),
+                    str(s.get('Aadhaar No', s.get('aadhaar_no', ''))), 
+                    str(s.get('Samagra ID', s.get('samagra_id', ''))), 
+                    s.get('Father Name', s.get('father_name', '')),
+                    s.get('Mother Name', s.get('mother_name', '')), 
+                    str(s.get('WhatsApp No', s.get('whatsapp_no', ''))), 
+                    s.get('Address', s.get('address', '')),
+                    s.get('Fee Cycle', s.get('fee_cycle', 'Monthly')),
+                    float(s.get('Cycle Fee Amount', s.get('cycle_fee_amount', 0)) or 0),
+                    float(s.get('Total Fee', s.get('school_fee_total', 0)) or 0),
+                    float(s.get('Transport Fee', s.get('transport_fee_total', 0)) or 0),
+                    s.get('Bank Name', s.get('bank_name', '')), 
+                    str(s.get('Account No', s.get('account_no', ''))), 
+                    s.get('IFSC Code', s.get('ifsc_code', ''))
+                ))
+                success_count += 1
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                    continue
+                print(f"Error: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        # Cleanup
+        shutil.rmtree(temp_dir)
+        
+        return jsonify({"success": True, "message": f"{success_count} students imported with photos!"})
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    
+# 📸 MANUAL REGISTRATION WITH PHOTO UPLOAD ENGINE
 @app.route('/api/students/register-manual', methods=['POST'])
 def register_manual_student():
     import os
-    import sqlite3
     from flask import request, jsonify
     
     try:
-        # Request features form parameters parsing data block
-        admission_no = request.form.get('admission_no', '').strip()
-        roll_no = request.form.get('roll_no', '').strip()
-        name = request.form.get('name', '')
-        student_class = request.form.get('class', '')
-        section = request.form.get('section', 'A')
-        stream = request.form.get('stream', '')
-        dob = request.form.get('dob', '')
-        gender = request.form.get('gender', 'Male')
-        category = request.form.get('category', 'General')
-        aadhaar_no = request.form.get('aadhaar_no', '')
-        samagra_id = request.form.get('samagra_id', '')
-        father_name = request.form.get('father_name', '')
-        mother_name = request.form.get('mother_name', '')
-        whatsapp_no = request.form.get('whatsapp_no', '')
-        address = request.form.get('address', '')
-        fee_cycle = request.form.get('fee_cycle', 'Monthly')
-        cycle_fee_amount = float(request.form.get('cycle_fee_amount', 0) or 0)
-        school_fee_total = float(request.form.get('school_fee_total', 0) or 0)
-        transport_fee_total = float(request.form.get('transport_fee_total', 0) or 0)
-        bank_name = request.form.get('bank_name', '')
-        account_no = request.form.get('account_no', '')
-        ifsc_code = request.form.get('ifsc_code', '')
+        # 🎯 MULTIPART FORM DATA SE DATA AUR FILE DONO LO
+        # Agar JSON hai to JSON se lo, agar FormData hai to form se lo
+        if request.is_json:
+            data = request.json
+            photo_file = None
+        else:
+            data = request.form.to_dict()
+            photo_file = request.files.get('student_photo')
+        
+        admission_no = data.get('admission_no', '').strip()
+        roll_no = data.get('roll_no', '').strip()
+        name = data.get('name', '')
+        student_class = data.get('class', '')
+        section = data.get('section', 'A')
+        stream = data.get('stream', '')
+        dob = data.get('dob', '')
+        gender = data.get('gender', 'Male')
+        category = data.get('category', 'General')
+        aadhaar_no = data.get('aadhaar_no', '')
+        samagra_id = data.get('samagra_id', '')
+        father_name = data.get('father_name', '')
+        mother_name = data.get('mother_name', '')
+        whatsapp_no = data.get('whatsapp_no', '')
+        address = data.get('address', '')
+        fee_cycle = data.get('fee_cycle', 'Monthly')
+        cycle_fee_amount = float(data.get('cycle_fee_amount', 0) or 0)
+        school_fee_total = float(data.get('school_fee_total', 0) or 0)
+        transport_fee_total = float(data.get('transport_fee_total', 0) or 0)
+        bank_name = data.get('bank_name', '')
+        account_no = data.get('account_no', '')
+        ifsc_code = data.get('ifsc_code', '')
 
         if not admission_no or not name or not student_class:
             return jsonify({"success": False, "error": "Admission No, Name aur Class zaroori hain!"}), 400
 
-        # File tracking stream engine allocation
-        photo_file = request.files.get('student_photo')
-        
-        # 📂 Local static path verification check
-        upload_folder = os.path.join(os.path.dirname(__file__), 'static', 'student_photos')
-        if not os.path.exists(upload_folder):
-            os.makedirs(upload_folder)
-
-        if photo_file:
-            # File name hardcoded matching to bacche ka unique Admission No
+        # 📸 PHOTO SAVE ENGINE - ENABLED
+        if photo_file and photo_file.filename:
+            upload_folder = os.path.join(os.path.dirname(__file__), 'static', 'student_photos')
+            
+            # ✅ Class-Section folder create karo
+            folder_name = f"{student_class}_{section}"
+            target_folder = os.path.join(upload_folder, folder_name)
+            
+            if not os.path.exists(target_folder):
+                os.makedirs(target_folder)
+            
+            # ✅ Roll number se photo save karo (ID Card ke hisaab se)
             file_extension = os.path.splitext(photo_file.filename)[1].lower() or '.jpg'
-            # Strict format naming structure
-            photo_filename = f"{admission_no}.jpg" 
-            photo_save_path = os.path.join(upload_folder, photo_filename)
+            photo_filename = f"{roll_no}.jpg"
+            photo_save_path = os.path.join(target_folder, photo_filename)
             photo_file.save(photo_save_path)
-            print(f"📸 PHOTO SAVED: File registered successfully at [{photo_save_path}]")
+            print(f"📸 PHOTO SAVED: {photo_save_path}")
 
-        # Database Insertion Execute Matrix Block
-        conn = sqlite3.connect(DB_NAME)
+        # Database Insertion
+        conn = get_db_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO students (
-                admission_no, roll_no, name, class, section, stream, dob, gender, category,
-                aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
+
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                INSERT INTO students (
+                    admission_no, roll_no, name, class, section, stream, dob, gender, category,
+                    aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
+                    fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                admission_no, roll_no, name, student_class, section, stream, dob, gender, category,
+                aadhaar_no, samagra_id, father_name, mother_name, whatsapp_no, address,
                 fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            admission_no, roll_no, name, student_class, section, stream, dob, gender, category,
-            aadhaar_no, samagra_id, father_name, mother_name, whatsapp_no, address,
-            fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
-        ))
+            ))
+        else:
+            execute_query(cursor, '''
+                INSERT INTO students (
+                    admission_no, roll_no, name, class, section, stream, dob, gender, category,
+                    aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
+                    fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                admission_no, roll_no, name, student_class, section, stream, dob, gender, category,
+                aadhaar_no, samagra_id, father_name, mother_name, whatsapp_no, address,
+                fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
+            ))
         
         conn.commit()
         conn.close()
-        return jsonify({"success": True, "message": "🎉 Student profile safely locked with upload photo asset!"})
+        return jsonify({"success": True, "message": "🎉 Student profile successfully registered!"})
 
-    except sqlite3.IntegrityError:
-        return jsonify({"success": False, "error": "❌ सावधान : यह Admission Number पहले से ही किसी और छात्र का है!"}), 400
     except Exception as e:
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            return jsonify({"success": False, "error": "❌ सावधान : यह Admission Number पहले से ही किसी और छात्र का है!"}), 400
         print("❌ Manual Registration Core Error Log:", str(e))
         return jsonify({"success": False, "error": str(e)}), 500
     
@@ -692,7 +922,7 @@ def get_fees_class_report():
     target_class = request.args.get('class')
     target_section = request.args.get('section', 'All')
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Base query string builder
@@ -718,7 +948,14 @@ def get_fees_class_report():
     query += " ORDER BY pending_balance DESC"
     
     try:
-        cursor.execute(query, tuple(params))
+        if DATABASE_URL:
+            # PostgreSQL uses %s
+            postgres_query = query.replace('?', '%s')
+            execute_query(cursor, postgres_query, tuple(params))
+        else:
+            # SQLite uses ?
+            execute_query(cursor, query, tuple(params))
+        
         rows = cursor.fetchall()
         columns = [col[0] for col in cursor.description]
         conn.close()
@@ -741,9 +978,9 @@ def send_bulk_fee_reminders():
     if not student_ids:
         return jsonify({"success": False, "error": "Kripya kam se kam ek bache ko select karein!"}), 400
         
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
+    execute_query(cursor, "SELECT school_name FROM school_settings WHERE id = 1")
     school_row = cursor.fetchone()
     school_name = school_row[0] if school_row else "Smart School ERP"
     
@@ -752,7 +989,7 @@ def send_bulk_fee_reminders():
     
     for s_id in student_ids:
         try:
-            cursor.execute('SELECT name, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ? AND status = "Active"', (s_id,))
+            execute_query(cursor, 'SELECT name, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ? AND status = "Active"', (s_id,))
             row = cursor.fetchone()
             if row:
                 student_name, pending_school, pending_trans = row
@@ -780,17 +1017,27 @@ def send_bulk_fee_reminders():
     conn.close()
     return jsonify({"success": True, "message": f"🎉 {success_sent} Reminders Telegram par bhej diye gaye!"})
 
-# 📲 INSTANT WHATSAPP FEE REMINDER API (Fixed Indentation)
+# 📲 INSTANT FEE REMINDER API (UPDATED TEMPLATE)
 @app.route('/api/fee-reminder', methods=['POST'])
 def send_fee_reminder():
     data = request.json
     student_id = data.get('student_id')
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
-    school_name = cursor.fetchone()[0]
-    cursor.execute('SELECT name, (school_fee_total - school_fee_paid), (transport_fee_total - transport_fee_paid) FROM students WHERE id = ?', (student_id,))
+    
+    # 1. School Name Fetch
+    execute_query(cursor, "SELECT school_name FROM school_settings WHERE id = 1")
+    school_name_row = cursor.fetchone()
+    school_name = school_name_row[0] if school_name_row else "SMART SCHOOL ERP"
+    
+    # 2. Student Data Fetch
+    execute_query(cursor, '''
+        SELECT name, 
+               (school_fee_total - school_fee_paid) as pending_school, 
+               (transport_fee_total - transport_fee_paid) as pending_trans 
+        FROM students WHERE id = ?
+    ''', (student_id,))
     row = cursor.fetchone()
     conn.close()
     
@@ -798,12 +1045,20 @@ def send_fee_reminder():
         student_name, pending_school, pending_trans = row
         total_due = pending_school + pending_trans
         
-        # Telegram Message
-        msg = f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\nNamaste {student_name},\n\nTotal Outstanding: *₹{total_due}*\n\n_Powered by A.B.Digital Work_"
+        # 3. Naya Template (Wahi jo tumne manga tha)
+        msg = (
+            f"🔔 *[FEE REMINDER - {school_name.upper()}]*\n\n"
+            f"नमस्त्ते ,\n\n"
+            f"🍁 *Student Name:* {student_name}\n"
+            f"📊 *Pending School Fee:* ₹{pending_school}\n"
+            f"🚌 *Pending Van/Bus Fee:* ₹{pending_trans}\n\n"
+            f"💰 *Total Outstanding Amount:* *₹{total_due}*\n\n"
+            f"कृप्या फीस का भुगतान समय से करें.\n\n"
+            f"_System Powered by A.B.Digital Work_"
+        )
         
         try:
-            # ✅ Telegram function call
-            send_telegram_msg(msg)
+            send_telegram_msg(msg) # Yeh function global wala use karega
             return jsonify({"success": True, "message": "🎉 Reminder instantly sent to Telegram!"})
         except Exception as e:
             return jsonify({"success": False, "message": "Telegram Bot Offline!"})
@@ -813,12 +1068,12 @@ def send_fee_reminder():
 @app.route('/api/settings', methods=['GET', 'POST'])
 def manage_settings():
     if request.method == 'GET':
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT school_name, school_address, school_email, school_mobile, school_logo, school_signature FROM school_settings WHERE id = 1")
+        execute_query(cursor, "SELECT school_name, school_address, school_email, school_mobile, school_logo, school_signature FROM school_settings WHERE id = 1")
         row = cursor.fetchone()
         
-        cursor.execute("SELECT school_latitude, school_longitude, allowed_radius_meters FROM attendance_rules WHERE id = 1")
+        execute_query(cursor, "SELECT school_latitude, school_longitude, allowed_radius_meters FROM attendance_rules WHERE id = 1")
         rules_row = cursor.fetchone()
         conn.close()
         
@@ -836,12 +1091,12 @@ def manage_settings():
         
     else:
         data = request.json or {}
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         try:
             # 1. School Profile Metadata Updates
-            cursor.execute('''
+            execute_query(cursor, '''
                 UPDATE school_settings 
                 SET school_name=?, school_address=?, school_email=?, school_mobile=?, school_logo=?, school_signature=? 
                 WHERE id=1
@@ -854,7 +1109,7 @@ def manage_settings():
             
             # 3. Direct auto-sync parameter injection into rules table
             if new_lat is not None and new_lng is not None:
-                cursor.execute("""
+                execute_query("""
                     UPDATE attendance_rules 
                     SET school_latitude = ?, school_longitude = ?, allowed_radius_meters = ? 
                     WHERE id = 1
@@ -871,11 +1126,17 @@ def manage_settings():
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, password, role FROM users WHERE username = ?", (data.get('username'),))
+    
+    if DATABASE_URL:
+        execute_query(cursor, "SELECT id, password, role FROM users WHERE username = %s", (data.get('username'),))
+    else:
+        execute_query(cursor, "SELECT id, password, role FROM users WHERE username = ?", (data.get('username'),))
+    
     user = cursor.fetchone()
     conn.close()
+    
     if user and bcrypt.check_password_hash(user[1], data.get('password')):
         token = jwt.encode({'user_id': user[0], 'role': user[2]}, SECRET_KEY, algorithm='HS256')
         return jsonify({"success": True, "token": token, "role": user[2]})
@@ -912,9 +1173,9 @@ def verify_and_reset():
     new_password = data.get('new_password')
     if verification_store.get(username) == str(otp):
         hashed_pw = bcrypt.generate_password_hash(new_password).decode('utf-8')
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET password = ? WHERE username = ?", (hashed_pw, username))
+        execute_query("UPDATE users SET password = ? WHERE username = ?", (hashed_pw, username))
         conn.commit()
         conn.close()
         verification_store.pop(username, None)
@@ -924,11 +1185,11 @@ def verify_and_reset():
 # 🧾 12. GET SPECIFIC TRANSACTION DETAILS FOR PRINTING
 @app.route('/api/transactions/<receipt_no>', methods=['GET'])
 def get_transaction_details(receipt_no):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Fetch transaction along with student details
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT t.receipt_no, t.amount_paid, t.school_pay, t.transport_pay, t.next_due_date, t.date,
                s.name, s.father_name, s.class, s.section, s.admission_no,
                (s.school_fee_total + s.transport_fee_total) as total_target,
@@ -952,9 +1213,9 @@ def get_transaction_details(receipt_no):
 # 🎯 IS ROUTE KO FILE KE EKDAM NEECHE COPIED-PASTE KAREIN
 @app.route('/api/students', methods=['GET'])
 def get_students():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM students WHERE status = 'Active'")
+    execute_query(cursor, "SELECT * FROM students WHERE status = 'Active'")
     columns = [col[0] for col in cursor.description]
     rows = cursor.fetchall()
     conn.close()
@@ -974,11 +1235,11 @@ def delete_student(student_id):
         return jsonify({"success": True}), 200
         
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 1. Check karte hain ki kya is ID ka bacha database mein hai
-        cursor.execute("SELECT name FROM students WHERE id = ?", (student_id,))
+        execute_query(cursor, "SELECT name FROM students WHERE id = ?", (student_id,))
         student = cursor.fetchone()
         
         if not student:
@@ -989,7 +1250,7 @@ def delete_student(student_id):
         
         # 2. Student ko delete karne ki query execute karte hain
         # Note: attendance_records table me CASCADE laga hua hai, toh uske saare records bhi safely drop ho jayenge
-        cursor.execute("DELETE FROM students WHERE id = ?", (student_id,))
+        execute_query(cursor, "DELETE FROM students WHERE id = ?", (student_id,))
         
         conn.commit()
         conn.close()
@@ -1014,12 +1275,12 @@ def update_student_profile():
     if not student_id:
         return jsonify({"success": False, "error": "Student ID missing hai!"}), 400
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
         # Saare customized enterprise level fields ko update karne ki absolute query
-        cursor.execute('''
+        execute_query(cursor, '''
             UPDATE students 
             SET admission_no=?, roll_no=?, name=?, class=?, section=?, dob=?, gender=?, category=?,
                 aadhaar_no=?, samagra_id=?, father_name=?, mother_name=?, parent_mobile=?, address=?, 
@@ -1051,12 +1312,12 @@ def update_student_profile():
 # 📜 FEE HISTORY API - Student ki complete payment history fetch karne ke liye
 @app.route('/api/fee-history/<int:student_id>', methods=['GET'])
 def get_fee_history(student_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
         # Pehle check karo ki student exist karta hai ya nahi
-        cursor.execute("SELECT id, name FROM students WHERE id = ?", (student_id,))
+        execute_query(cursor, "SELECT id, name FROM students WHERE id = ?", (student_id,))
         student = cursor.fetchone()
         
         if not student:
@@ -1064,7 +1325,7 @@ def get_fee_history(student_id):
             return jsonify({"success": False, "error": "Student not found"}), 404
         
         # Student ki saari transactions fetch karo
-        cursor.execute('''
+        execute_query(cursor, '''
             SELECT receipt_no, school_pay, transport_pay, date, next_due_date, amount_paid
             FROM fee_transactions 
             WHERE student_id = ? 
@@ -1102,7 +1363,7 @@ def get_fee_history(student_id):
 # 🎯 Is route ko is tarah se tight filter par map kijiye:
 @app.route('/api/staff', methods=['GET', 'POST'])
 def manage_staff():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     if request.method == 'GET':
         # Check karenge ki kya frontend ne koi specific mobile number bheja hai
@@ -1111,17 +1372,21 @@ def manage_staff():
         if mobile_filter:
             # Clean format checks (91 handle karne ke liye)
             clean_mobile = mobile_filter[-10:] if len(mobile_filter) >= 10 else mobile_filter
-            cursor.execute("SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE (mobile LIKE ? OR mobile LIKE ?) AND status = 'Active'", (f"%{clean_mobile}", f"*{clean_mobile}"))
+            execute_query(cursor, "SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE (mobile LIKE ? OR mobile LIKE ?) AND status = 'Active'", (f"%{clean_mobile}", f"%{clean_mobile}"))
         else:
-            cursor.execute("SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE status = 'Active'")
+            execute_query(cursor, "SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE status = 'Active'")
             
         rows = cursor.fetchall()
         conn.close()
         return jsonify([{"id": r[0], "name": r[1], "designation": r[2], "mobile": r[3], "base_salary": r[4], "status": r[5]} for r in rows])
     else:
         data = request.json
-        cursor.execute("INSERT INTO staff (name, designation, mobile, base_salary) VALUES (?, ?, ?, ?)",
-                       (data.get('name'), data.get('designation'), str(data.get('mobile', '')).strip(), float(data.get('base_salary', 0))))
+        if DATABASE_URL:
+            execute_query("INSERT INTO staff (name, designation, mobile, base_salary) VALUES (%s, %s, %s, %s)",
+                           (data.get('name'), data.get('designation'), str(data.get('mobile', '')).strip(), float(data.get('base_salary', 0))))
+        else:
+            execute_query("INSERT INTO staff (name, designation, mobile, base_salary) VALUES (?, ?, ?, ?)",
+                           (data.get('name'), data.get('designation'), str(data.get('mobile', '')).strip(), float(data.get('base_salary', 0))))
         conn.commit()
         conn.close()
         return jsonify({"success": True, "message": "Staff member registered!"})
@@ -1129,16 +1394,16 @@ def manage_staff():
 # ⚙️ 2. GET/UPDATE ATTENDANCE RULES API (FALLBACK SYSTEM FIXED ⚡)
 @app.route('/api/attendance-rules', methods=['GET', 'POST'])
 def manage_attendance_rules():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     if request.method == 'GET':
-        cursor.execute("SELECT school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time FROM attendance_rules WHERE id = 1")
+        execute_query(cursor, "SELECT school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time FROM attendance_rules WHERE id = 1")
         row = cursor.fetchone()
         
         # Agar database me entry nahi mili toh safe default data bhejein
         if row is None:
             # Table me turant ek default row insert bhi kar dete hain taaki aage dikkat na ho
-            cursor.execute('''
+            execute_query(cursor, '''
                 INSERT OR IGNORE INTO attendance_rules (id, school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time)
                 VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
             ''')
@@ -1151,7 +1416,7 @@ def manage_attendance_rules():
     else:
         data = request.json
         # Baki ka POST section pehle jaisa hi rahega...
-        cursor.execute('''
+        execute_query(cursor, '''
             UPDATE attendance_rules 
             SET school_latitude=?, school_longitude=?, allowed_radius_meters=?, shift_start_time=?, late_buffer_minutes=?, shift_end_time=? 
             WHERE id = 1
@@ -1181,7 +1446,7 @@ def mark_staff_attendance():
             "message": "🚨 GPS Signal Missing! Kripya apne mobile ki Location Settings/Permission chalu karein aur page refresh karein."
         }), 400
 
-    conn = sqlite3.connect(DB_NAME, timeout=20)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Dynamic Safe Fallbacks Initializers
@@ -1191,7 +1456,7 @@ def mark_staff_attendance():
     
     # 🎯 STEP 1: Setting Page Wale Sahi Coordinates Direct school_settings Se Load Karo
     try:
-        cursor.execute("SELECT * FROM school_settings LIMIT 1")
+        execute_query(cursor, "SELECT * FROM school_settings LIMIT 1")
         settings_row = cursor.fetchone()
         if settings_row:
             col_names = [desc[0].lower() for desc in cursor.description]
@@ -1210,7 +1475,7 @@ def mark_staff_attendance():
 
     # 🎯 STEP 2: Main Shift Timings Aur Rules Table Backup Link
     try:
-        cursor.execute("SELECT allowed_radius_meters, shift_start_time, late_buffer_minutes, late_fine_per_minute, shift_end_time, school_latitude, school_longitude FROM attendance_rules WHERE id = 1")
+        execute_query(cursor, "SELECT allowed_radius_meters, shift_start_time, late_buffer_minutes, late_fine_per_minute, shift_end_time, school_latitude, school_longitude FROM attendance_rules WHERE id = 1")
         time_rule = cursor.fetchone()
         if time_rule:
             rule_radius, start_time, buffer_min, late_fine_rate, end_time, rule_lat, rule_lng = time_rule
@@ -1258,7 +1523,7 @@ def mark_staff_attendance():
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     
     # Staff / Profile Validity Verification (Tightly mapped to intercept registered tokens)
-    cursor.execute("SELECT name, mobile, device_token FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
+    execute_query(cursor, "SELECT name, mobile, device_token FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
     staff_row = cursor.fetchone()
     if not staff_row:
         conn.close()
@@ -1268,7 +1533,7 @@ def mark_staff_attendance():
     # 🔥 ANTI-PROXY DEVICE BINDING ENGINE: (Bina locha ke solid logic)
     if device_token:
         # 🛡️ STEP 1: Pehle hi check karlo ki yeh device kisi DOOSRE staff member par toh locked nahi hai
-        cursor.execute("SELECT name FROM staff WHERE device_token = ? AND id != ? AND status = 'Active'", (device_token, staff_id))
+        execute_query(cursor, "SELECT name FROM staff WHERE device_token = ? AND id != ? AND status = 'Active'", (device_token, staff_id))
         existing_owner = cursor.fetchone()
         
         if existing_owner:
@@ -1280,7 +1545,7 @@ def mark_staff_attendance():
 
         # 🛡️ STEP 2: Agar device fresh hai aur kisi ke paas nahi hai, toh pehli baar par is staff se link kardo
         if not registered_device:
-            cursor.execute("UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
+            execute_query("UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
             conn.commit()
             print(f"🔒 [DEVICE RECOGNIZED & LOCKED]: Staff '{staff_name}' is now tightly linked to device footprint.")
         
@@ -1293,7 +1558,7 @@ def mark_staff_attendance():
             }), 403
     
     # Check for Existing Attendance Streams
-    cursor.execute("SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
+    execute_query(cursor, "SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
     attendance_record = cursor.fetchone()
     
     # Mobile formatting connection string cleanup
@@ -1322,7 +1587,7 @@ def mark_staff_attendance():
         except Exception as e:
             print("⚠️ Late fine math calculation failed safely:", e)
             
-        cursor.execute("INSERT INTO staff_attendance (staff_id, date, check_in_time, status, late_fine, leave_type) VALUES (?, ?, ?, ?, ?, 'Present')",
+        execute_query("INSERT INTO staff_attendance (staff_id, date, check_in_time, status, late_fine, leave_type) VALUES (?, ?, ?, ?, ?, 'Present')",
                        (staff_id, today_str, current_time_str, status, late_fine))
         conn.commit()
         conn.close()
@@ -1372,7 +1637,7 @@ def mark_staff_attendance():
         except Exception as e:
             print("⚠️ Half-day check runtime evaluation error:", e)
             
-        cursor.execute("UPDATE staff_attendance SET check_out_time = ?, is_half_day = ? WHERE id = ?", (current_time_str, is_half_day, attn_id))
+        execute_query("UPDATE staff_attendance SET check_out_time = ?, is_half_day = ? WHERE id = ?", (current_time_str, is_half_day, attn_id))
         conn.commit()
         conn.close()
         
@@ -1394,7 +1659,7 @@ def mark_staff_attendance():
 
 @app.route('/api/attendance/today', methods=['GET'])
 def get_today_attendance():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # 🎯 BADLAAV 1: Date ka format DD/MM/YYYY kar diya jisse data filter ho sake
@@ -1403,7 +1668,7 @@ def get_today_attendance():
     
     # 🎯 BADLAAV 2: Table ka naam 'staff_attendance' kiya aur columns sahi kiye
     # Kyunki staff attendance lagne par data isi table me check_in_time ke sath jata hai
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT s.name, s.designation, sa.check_in_time, sa.check_out_time, sa.date
         FROM staff_attendance sa
         JOIN staff s ON sa.staff_id = s.id
@@ -1429,11 +1694,11 @@ def get_today_attendance():
 @app.route('/api/attendance/mark', methods=['POST'])
 def mark_qr_attendance():
     data = request.json or {}
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Create table if not exists
-    cursor.execute('''
+    execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS qr_attendance (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             teacher_id TEXT NOT NULL,
@@ -1457,7 +1722,7 @@ def mark_qr_attendance():
     target_teacher_id = data.get('teacher_id')
     
     # Check if already marked today
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT id FROM qr_attendance 
         WHERE teacher_id = ? AND date = ?
     ''', (target_teacher_id, today))
@@ -1466,7 +1731,7 @@ def mark_qr_attendance():
         conn.close()
         return jsonify({"success": False, "error": "Attendance already marked for today!"})
     
-    cursor.execute('''
+    execute_query(cursor, '''
         INSERT INTO qr_attendance 
         (teacher_id, teacher_name, teacher_subject, date, time, latitude, longitude, distance, status, marked_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1495,11 +1760,11 @@ def mark_qr_attendance():
 def get_today_payroll_report():
     # Sahi tarika:
     today_str = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT s.name, s.designation, sa.date, sa.check_in_time, sa.check_out_time, 
                sa.late_fine, sa.is_half_day, sa.leave_type, s.pf_enabled
         FROM staff_attendance sa
@@ -1523,15 +1788,14 @@ def get_today_payroll_report():
 @app.route('/api/payroll/monthly-report', methods=['GET'])
 def get_monthly_payroll_report():
     import datetime
-    import sqlite3
     month_filter = request.args.get('month') 
     if not month_filter:
         month_filter = datetime.date.today().strftime("%Y-%m")
         
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT s.id, s.name, s.designation, sa.date, sa.check_in_time, sa.check_out_time, 
                sa.late_fine, sa.is_half_day, sa.leave_type, s.pf_enabled, CAST(s.base_salary AS REAL)
         FROM staff_attendance sa
@@ -1597,14 +1861,13 @@ def get_monthly_payroll_report():
 # 💰 3. DYNAMIC PAY-SLIP & SALARY ACCOUNTING ENGINE (SYNCED WITH 3-LATE RULE)
 @app.route('/api/payroll/payslip/<int:staff_id>', methods=['GET'])
 def generate_staff_payslip_metrics(staff_id):
-    import sqlite3
     import datetime
     month_filter = request.args.get('month', datetime.date.today().strftime("%Y-%m"))
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT name, designation, base_salary, pf_enabled, pf_percentage, available_cl FROM staff WHERE id = ?", (staff_id,))
+    execute_query(cursor, "SELECT name, designation, base_salary, pf_enabled, pf_percentage, available_cl FROM staff WHERE id = ?", (staff_id,))
     staff = cursor.fetchone()
     if not staff:
         conn.close()
@@ -1613,7 +1876,7 @@ def generate_staff_payslip_metrics(staff_id):
     name, designation, base_salary, pf_enabled, pf_percentage, available_cl = staff
     
     # Attendance details nikalenge exact calculation ke liye
-    cursor.execute('''
+    execute_query(cursor, '''
         SELECT late_fine, is_half_day 
         FROM staff_attendance 
         WHERE staff_id = ? AND date LIKE ?
@@ -1651,20 +1914,19 @@ def generate_staff_payslip_metrics(staff_id):
 # 📊 MANAGEMENT MONTHLY MASTER PAYROLL SHEET API (SYNCED WITH 3-LATE RULE)
 @app.route('/api/payroll/management-sheet', methods=['GET'])
 def get_management_payroll_sheet():
-    import sqlite3
     import datetime
     month_filter = request.args.get('month', datetime.date.today().strftime("%Y-%m-%d")[:7])
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("SELECT id, name, designation, base_salary, pf_enabled, pf_percentage, available_cl FROM staff WHERE status = 'Active'")
+    execute_query(cursor, "SELECT id, name, designation, base_salary, pf_enabled, pf_percentage, available_cl FROM staff WHERE status = 'Active'")
     all_staff = cursor.fetchall()
     
     management_sheet = []
     
     for staff_id, name, designation, base_salary, pf_enabled, pf_percentage, available_cl in all_staff:
-        cursor.execute('''
+        execute_query(cursor, '''
             SELECT id, late_fine, is_half_day
             FROM staff_attendance 
             WHERE staff_id = ? AND date LIKE ?
@@ -1679,7 +1941,7 @@ def get_management_payroll_sheet():
         
         # Advance checking
         try:
-            cursor.execute("SELECT SUM(amount) FROM staff_advance WHERE staff_id = ? AND date LIKE ?", (staff_id, f"{month_filter}%"))
+            execute_query(cursor, "SELECT SUM(amount) FROM staff_advance WHERE staff_id = ? AND date LIKE ?", (staff_id, f"{month_filter}%"))
             advance_row = cursor.fetchone()
             total_advance_taken = advance_row[0] or 0.0
         except Exception:
@@ -1742,9 +2004,9 @@ def add_new_expense():
         return jsonify({"success": False, "error": "Title, Category aur Amount bhejnah zaroori hai!"}), 400
 
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        execute_query(cursor, '''
             INSERT INTO expenses (title, category, amount, date, payment_mode, vendor_name, remarks)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (title, category, float(amount), date, payment_mode, vendor_name, remarks))
@@ -1763,7 +2025,6 @@ def add_new_expense():
 @app.route('/api/accounting/save-new-expense', methods=['POST'])
 def unique_save_new_expense_route():
     import datetime
-    import sqlite3
     data = request.json or {}
     title = data.get('title')
     category = data.get('category')
@@ -1777,9 +2038,9 @@ def unique_save_new_expense_route():
         return jsonify({"success": False, "error": "Title, Category aur Amount bhejna zaroori hai!"}), 400
 
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        execute_query(cursor, '''
             INSERT INTO expenses (title, category, amount, date, payment_mode, vendor_name, remarks)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (str(title), str(category), float(amount), str(date), str(payment_mode), str(vendor_name), str(remarks)))
@@ -1794,10 +2055,9 @@ def unique_save_new_expense_route():
 
 @app.route('/api/accounting/fetch-expenses-list', methods=['GET'])
 def unique_fetch_expenses_list_route():
-    import sqlite3
     category_filter = request.args.get('category', 'All')
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         # Force regular tuple response to prevent dictionary model crashes
         conn.row_factory = None 
         cursor = conn.cursor()
@@ -1811,7 +2071,7 @@ def unique_fetch_expenses_list_route():
             
         query += " ORDER BY date DESC"
         
-        cursor.execute(query, tuple(params))
+        execute_query(cursor, query, tuple(params))
         rows = cursor.fetchall()
         
         expenses_list = []
@@ -1837,18 +2097,17 @@ def unique_fetch_expenses_list_route():
 
 @app.route('/api/accounting/fetch-financial-summary', methods=['GET'])
 def unique_fetch_financial_summary_route():
-    import sqlite3
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         conn.row_factory = None
         cursor = conn.cursor()
         
-        cursor.execute("SELECT SUM(amount) FROM expenses")
+        execute_query(cursor, "SELECT SUM(amount) FROM expenses")
         res_exp = cursor.fetchone()
         total_expenses = (res_exp[0] if res_exp else 0.0) or 0.0
         
         try:
-            cursor.execute("SELECT SUM(school_fee_paid + transport_fee_paid) FROM students")
+            execute_query(cursor, "SELECT SUM(school_fee_paid + transport_fee_paid) FROM students")
             res_inc = cursor.fetchone()
             total_income = (res_inc[0] if res_inc else 0.0) or 0.0
         except Exception as sql_err:
@@ -1873,16 +2132,15 @@ def delete_staff_profile(staff_id):
     if request.method == 'OPTIONS':
         return jsonify({"success": True}), 200
         
-    import sqlite3
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 1. Staff ko main table se saaf kiya
-        cursor.execute("DELETE FROM staff WHERE id = ?", (staff_id,))
+        execute_query(cursor, "DELETE FROM staff WHERE id = ?", (staff_id,))
         
         # 2. Saath hi uski saari attendance history ko bhi drop kiya taaki integrity bani rahe
-        cursor.execute("DELETE FROM staff_attendance WHERE staff_id = ?", (staff_id,))
+        execute_query(cursor, "DELETE FROM staff_attendance WHERE staff_id = ?", (staff_id,))
         
         conn.commit()
         conn.close()
@@ -1897,8 +2155,8 @@ def delete_staff_profile(staff_id):
 # 📡 API ROUTE: FETCH STUDENTS FOR CLASS-WISE ID CARD GENERATION (SMART STREAM PARSER)
 @app.route('/api/academic/class-students-cards', methods=['GET'])
 def get_class_students_for_cards():
-    import sqlite3
     from flask import request, jsonify
+    import os
     
     full_class_name = request.args.get('class_name', '')
     section_name = request.args.get('section', 'All')
@@ -1922,7 +2180,7 @@ def get_class_students_for_cards():
         # Bracket ke andar se stream ka naam nikalo (e.g., Science, Commerce, Arts)
         target_stream = full_class_name.split("(")[1].replace(")", "").strip()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Base query active students ke liye
@@ -1941,16 +2199,37 @@ def get_class_students_for_cards():
         params.append(section_name)
         
     try:
-        cursor.execute(query, tuple(params))
+        execute_query(cursor, query, tuple(params))
         rows = cursor.fetchall()
         conn.close()
+        
+        # 🎯 BASE URL for photos
+        BASE_URL = "https://abd-school-backend.onrender.com"
         
         students_list = []
         for r in rows:
             display_class = r[4]
             if r[4] == '11' or r[4] == '12':
                 display_class = f"Class {r[4]}th"
-                
+            
+            # 🎯 DYNAMIC PHOTO URL GENERATE KARO
+            roll_no = str(r[3]).strip() if r[3] else ''
+            student_class = str(r[4]).strip() if r[4] else ''
+            section = str(r[5]).strip() if r[5] else 'A'
+            
+            # ✅ Folder name: "10_B" format
+            folder_name = f"{student_class}_{section}"
+            
+            # ✅ Photo URL: Roll No se
+            photo_url = f"{BASE_URL}/static/student_photos/{folder_name}/{roll_no}.jpg"
+            
+            # ✅ FALLBACK 1: Agar roll_no se na mile to admission_no se try karo
+            # (admission_no column additional hai, agar chahiye to)
+            
+            # ✅ FINAL FALLBACK: Placeholder
+            # Photo check karne ke liye HEAD request
+            # (Simple approach - direct URL bhejo, frontend handle kar lega)
+            
             students_list.append({
                 "id": r[0],
                 "name": r[1],
@@ -1960,7 +2239,8 @@ def get_class_students_for_cards():
                 "section": r[5],
                 "phone": r[6],
                 "address": r[7],
-                "photo": "https://via.placeholder.com/150" # Default layout placeholder
+                "photo": photo_url,  # ✅ DYNAMIC PHOTO URL
+                "photo_fallback": "https://via.placeholder.com/150?text=No+Photo"  # Fallback for frontend
             })
             
         print(f"🎯 SYSTEM SYNC: Found {len(students_list)} active students for Class {target_class} {target_stream}")
@@ -1970,6 +2250,10 @@ def get_class_students_for_cards():
         if 'conn' in locals(): conn.close()
         print("❌ ID Card Fetch Operational Error:", str(e))
         return jsonify({"success": False, "error": str(e)}), 500
+    
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({"status": "alive", "timestamp": datetime.now().isoformat()})
     
 @app.route('/api/student-photos/<path:folder_and_file>')
 def get_student_photo_bypass(folder_and_file):
@@ -1997,11 +2281,11 @@ def fetch_class_timetable_relational():
     if not class_id:
         return jsonify({"success": False, "error": "Class ID select karna zaroori hai!"}), 400
         
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
+        execute_query(cursor, '''
             SELECT t.id, t.day_of_week, t.period_number, t.start_time, t.end_time, sub.subject_name, s.name, t.subject_id, t.teacher_id
             FROM timetables t
             LEFT JOIN subjects sub ON t.subject_id = sub.id
@@ -2046,13 +2330,13 @@ def save_timetable_slot_relational():
     if not class_id or not day or not period:
         return jsonify({"success": False, "error": "Required fields missing hain!"}), 400
         
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
         # 🛡️ ANTI-CLASH INTERCEPTOR: Ek hi time par teacher doosri class me na fas jaye
         if teacher_id:
-            cursor.execute('''
+            execute_query(cursor, '''
                 SELECT c.class_name, t.section_name FROM timetables t
                 JOIN classes c ON t.class_id = c.id
                 WHERE t.day_of_week = ? AND t.period_number = ? AND t.teacher_id = ? AND NOT (t.class_id = ? AND t.section_name = ?)
@@ -2066,19 +2350,19 @@ def save_timetable_slot_relational():
                 }), 400
 
         # Upsert logic (Pehle se slot bana hai to update, nahi to fresh register)
-        cursor.execute('''
+        execute_query(cursor, '''
             SELECT id FROM timetables WHERE class_id = ? AND section_name = ? AND day_of_week = ? AND period_number = ?
         ''', (class_id, section, day, period))
         existing = cursor.fetchone()
         
         if existing:
-            cursor.execute('''
+            execute_query(cursor, '''
                 UPDATE timetables 
                 SET start_time=?, end_time=?, subject_id=?, teacher_id=?
                 WHERE id = ?
             ''', (start_time, end_time, subject_id, teacher_id, existing[0]))
         else:
-            cursor.execute('''
+            execute_query(cursor, '''
                 INSERT INTO timetables (class_id, section_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (class_id, section, day, period, start_time, end_time, subject_id, teacher_id))
@@ -2179,7 +2463,7 @@ def get_students_for_attendance():
                 "message": "🔒 Attendance Locked: आज Sunday है, आज की छुट्टी है!"
             }), 200
 
-        conn = sqlite3.connect('school.db')
+        conn = get_db_connection()  # ← PostgreSQL use karega
         cursor = conn.cursor()
 
         # 2. 🏖️ HOLIDAY TABLE CHECK (Database validation)
@@ -2188,7 +2472,7 @@ def get_students_for_attendance():
             SELECT holiday_name FROM holidays 
             WHERE ? BETWEEN start_date AND end_date
         """
-        cursor.execute(holiday_query, (date_str,))
+        execute_query(cursor, holiday_query, (date_str,))
         holiday = cursor.fetchone()
         
         if holiday:
@@ -2200,7 +2484,7 @@ def get_students_for_attendance():
 
         # 3. 📝 NORMAL DAY: Agar Sunday/Holiday nahi hai, toh students ki list nikalo
         query = "SELECT id, roll_no, name FROM students WHERE class = ? AND section = ? ORDER BY roll_no ASC"
-        cursor.execute(query, (class_name, section_name))
+        execute_query(query, (class_name, section_name))
         students = cursor.fetchall()
         conn.close()
         
@@ -2233,16 +2517,16 @@ def submit_attendance():
         return jsonify({"error": "Data adhura hai!"}), 400
         
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 1. Purani attendance delete karna
-        cursor.execute("DELETE FROM attendance_records WHERE class_name = ? AND section_name = ? AND date = ?", 
+        execute_query(cursor, "DELETE FROM attendance_records WHERE class_name = ? AND section_name = ? AND date = ?", 
                        (class_name, section_name, date_str))
         
         absent_student_ids = []
         for record in records:
-            cursor.execute("INSERT INTO attendance_records (student_id, class_name, section_name, date, status) VALUES (?, ?, ?, ?, ?)", 
+            execute_query("INSERT INTO attendance_records (student_id, class_name, section_name, date, status) VALUES (?, ?, ?, ?, ?)", 
                            (record['student_id'], class_name, section_name, date_str, record['status']))
             if record['status'] == 'Absent':
                 absent_student_ids.append(record['student_id'])
@@ -2251,11 +2535,11 @@ def submit_attendance():
         
         # 2. Telegram Trigger (Agar absent bachhe hain)
         if absent_student_ids:
-            cursor.execute("SELECT school_name FROM school_settings WHERE id = 1")
+            execute_query(cursor, "SELECT school_name FROM school_settings WHERE id = 1")
             school_name = cursor.fetchone()[0] if cursor.fetchone() else "Smart School ERP"
             
             placeholders = ', '.join(['?'] * len(absent_student_ids))
-            cursor.execute(f"SELECT name FROM students WHERE id IN ({placeholders})", absent_student_ids)
+            execute_query(f"SELECT name FROM students WHERE id IN ({placeholders})", absent_student_ids)
             
             for (name,) in cursor.fetchall():
                 msg = f"🧾 *[अनुपस्थिति सूचना - {school_name.upper()}]*\nनमस्ते, *{name}* आज स्कूल में अनुपस्थित (ABSENT) है।"
@@ -2300,11 +2584,11 @@ def link_telegram():
     phone = str(data.get('phone')).strip()
     telegram_id = str(data.get('telegram_id')).strip()
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # Database mein number search karke ID save karo
-    cursor.execute("UPDATE students SET parent_telegram_id = ? WHERE parent_mobile = ?", (telegram_id, phone))
+    execute_query("UPDATE students SET parent_telegram_id = ? WHERE parent_mobile = ?", (telegram_id, phone))
     
     if cursor.rowcount > 0:
         conn.commit()
@@ -2313,6 +2597,963 @@ def link_telegram():
     else:
         conn.close()
         return jsonify({"success": False, "error": "❌ Number hamare record mein nahi mila!"})
+    
+# =====================================================================
+# 💰 ADVANCE SALARY MANAGEMENT APIs
+# =====================================================================
+
+@app.route('/api/payroll/add-advance', methods=['POST'])
+def add_advance_payment():
+    """Save advance payment for a staff member"""
+    data = request.json
+    staff_id = data.get('staff_id')
+    amount = data.get('amount')
+    purpose = data.get('purpose', 'Personal Advance')
+    date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
+    
+    if not staff_id or not amount:
+        return jsonify({"success": False, "error": "Staff ID and amount required"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                CREATE TABLE IF NOT EXISTS staff_advance (
+                    id SERIAL PRIMARY KEY,
+                    staff_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    purpose TEXT,
+                    date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            execute_query(cursor, '''
+                INSERT INTO staff_advance (staff_id, amount, purpose, date)
+                VALUES (%s, %s, %s, %s)
+            ''', (staff_id, amount, purpose, date))
+        else:
+            execute_query(cursor, '''
+                CREATE TABLE IF NOT EXISTS staff_advance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    staff_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    purpose TEXT,
+                    date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            execute_query(cursor, '''
+                INSERT INTO staff_advance (staff_id, amount, purpose, date)
+                VALUES (?, ?, ?, ?)
+            ''', (staff_id, amount, purpose, date))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "message": "Advance payment recorded"})
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    
+@app.route('/api/payroll/advance-history/<int:staff_id>', methods=['GET'])
+def get_advance_history(staff_id):
+    """Fetch all advance payments for a staff member"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Ensure table exists
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                CREATE TABLE IF NOT EXISTS staff_advance (
+                    id SERIAL PRIMARY KEY,
+                    staff_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    purpose TEXT,
+                    date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            execute_query(cursor, '''
+                SELECT id, staff_id, amount, purpose, date, created_at
+                FROM staff_advance
+                WHERE staff_id = %s
+                ORDER BY date DESC, id DESC
+            ''', (staff_id,))
+        else:
+            execute_query(cursor, '''
+                CREATE TABLE IF NOT EXISTS staff_advance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    staff_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    purpose TEXT,
+                    date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            execute_query(cursor, '''
+                SELECT id, staff_id, amount, purpose, date, created_at
+                FROM staff_advance
+                WHERE staff_id = ?
+                ORDER BY date DESC, id DESC
+            ''', (staff_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        history = []
+        for row in rows:
+            history.append({
+                "id": row[0],
+                "staff_id": row[1],
+                "amount": row[2],
+                "purpose": row[3],
+                "date": row[4],
+                "created_at": row[5]
+            })
+        
+        return jsonify(history)
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/payroll/download-advance-history/<int:staff_id>', methods=['GET'])
+def download_advance_history(staff_id):
+    """Download advance history as CSV"""
+    import csv
+    from io import StringIO
+    from flask import Response
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get staff name
+    if DATABASE_URL:
+        execute_query(cursor, "SELECT name FROM staff WHERE id = %s", (staff_id,))
+    else:
+        execute_query(cursor, "SELECT name FROM staff WHERE id = ?", (staff_id,))
+    staff_row = cursor.fetchone()
+    staff_name = staff_row[0] if staff_row else "Unknown"
+    
+    # Get advance history
+    if DATABASE_URL:
+        execute_query(cursor, '''
+            SELECT date, amount, purpose, staff_id
+            FROM staff_advance
+            WHERE staff_id = %s
+            ORDER BY date DESC
+        ''', (staff_id,))
+    else:
+        execute_query(cursor, '''
+            SELECT date, amount, purpose, staff_id
+            FROM staff_advance
+            WHERE staff_id = ?
+            ORDER BY date DESC
+        ''', (staff_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Date', 'Amount (₹)', 'Purpose', 'Staff ID', 'Staff Name'])
+    
+    for row in rows:
+        writer.writerow([row[0], f"₹{row[1]}", row[2], row[3], staff_name])
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename=advance_history_{staff_name}_{staff_id}.csv'}
+    )  
+    
+# =====================================================================
+# 👨‍👩‍👧 PARENT APP APIs
+# =====================================================================
+
+@app.route('/api/parent/login', methods=['POST'])
+def parent_login():
+    """Parent login with mobile + password (DOB)"""
+    data = request.json
+    mobile = data.get('mobile')
+    password = data.get('password')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Ensure parent_accounts table exists
+        execute_query(cursor, '''
+            CREATE TABLE IF NOT EXISTS parent_accounts (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                mobile TEXT NOT NULL,
+                email TEXT,
+                password TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(student_id) REFERENCES students(id)
+            )
+        ''')
+        conn.commit()
+        
+        # ✅ Check if parent account exists
+        execute_query(cursor, '''
+            SELECT pa.id, pa.student_id, pa.password, pa.mobile, 
+                   s.name as student_name, s.class, s.section, s.roll_no,
+                   (s.school_fee_total - s.school_fee_paid) as pending_fees
+            FROM parent_accounts pa
+            JOIN students s ON pa.student_id = s.id
+            WHERE pa.mobile = ?
+        ''', (mobile,))
+        row = cursor.fetchone()
+        
+        # ✅ If no account exists, create one automatically!
+        if not row:
+            # Get student with this mobile
+            execute_query(cursor, '''
+                SELECT id, name, class, section, roll_no, dob, 
+                       (school_fee_total - school_fee_paid) as pending_fees
+                FROM students 
+                WHERE parent_mobile = ? AND status = 'Active'
+            ''', (mobile,))
+            student = cursor.fetchone()
+            
+            if student:
+                # Auto-create parent account
+                student_id = student[0]
+                # Password is DOB (DDMMYYYY)
+                dob_password = student[5].replace('/', '') if student[5] else '01012000'
+                hashed = bcrypt.generate_password_hash(dob_password).decode('utf-8')
+                
+                execute_query(cursor, '''
+                    INSERT INTO parent_accounts (student_id, mobile, password)
+                    VALUES (?, ?, ?)
+                ''', (student_id, mobile, hashed))
+                conn.commit()
+                
+                # ✅ Now fetch the newly created account
+                execute_query(cursor, '''
+                    SELECT pa.id, pa.student_id, pa.password, pa.mobile, 
+                           s.name as student_name, s.class, s.section, s.roll_no,
+                           (s.school_fee_total - s.school_fee_paid) as pending_fees
+                    FROM parent_accounts pa
+                    JOIN students s ON pa.student_id = s.id
+                    WHERE pa.mobile = ?
+                ''', (mobile,))
+                row = cursor.fetchone()
+        
+        conn.close()
+        
+        if not row:
+            return jsonify({"success": False, "message": "❌ Mobile number not found. Please contact school."}), 401
+        
+        # Verify password (bcrypt)
+        if bcrypt.check_password_hash(row[2], password):
+            token = jwt.encode({'parent_id': row[0], 'student_id': row[1]}, SECRET_KEY, algorithm='HS256')
+            return jsonify({
+                "success": True,
+                "token": token,
+                "parent": {
+                    "id": row[0],
+                    "mobile": row[3],
+                    "name": "Parent",
+                    "student": {
+                        "id": row[1],
+                        "name": row[4],
+                        "class": row[5],
+                        "section": row[6],
+                        "roll_no": row[7],
+                        "pending_fees": row[8] or 0
+                    }
+                }
+            })
+        
+        return jsonify({"success": False, "message": "❌ गलत पासवर्ड"}), 401
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/api/parent/verify', methods=['GET'])
+def parent_verify():
+    """Verify JWT token for parent"""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        parent_id = payload.get('parent_id')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        execute_query(cursor, '''
+            SELECT pa.id, pa.mobile, pa.student_id, s.name as student_name, 
+                   s.class, s.section, s.roll_no,
+                   (s.school_fee_total - s.school_fee_paid) as pending_fees
+            FROM parent_accounts pa
+            JOIN students s ON pa.student_id = s.id
+            WHERE pa.id = ?
+        ''', (parent_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return jsonify({
+                "success": True,
+                "parent": {
+                    "id": row[0],
+                    "mobile": row[1],
+                    "name": "Parent",
+                    "student": {
+                        "id": row[2],
+                        "name": row[3],
+                        "class": row[4],
+                        "section": row[5],
+                        "roll_no": row[6],
+                        "pending_fees": row[7] or 0
+                    }
+                }
+            })
+        
+        return jsonify({"success": False, "message": "Invalid token"}), 401
+    except:
+        return jsonify({"success": False, "message": "Invalid token"}), 401
+
+
+@app.route('/api/parent/forgot-password', methods=['POST'])
+def parent_forgot_password():
+    """Send OTP for password reset"""
+    data = request.json
+    mobile = data.get('mobile')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_query(cursor, "SELECT id FROM parent_accounts WHERE mobile = ?", (mobile,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return jsonify({"success": False, "message": "❌ मोबाइल नंबर नहीं मिला"}), 404
+    
+    # Generate OTP
+    otp = str(random.randint(100000, 999999))
+    verification_store[mobile] = otp
+    
+    # Send OTP via email (console log for now)
+    print(f"📧 OTP for {mobile}: {otp}")
+    
+    return jsonify({"success": True, "message": "✅ OTP sent to your registered email"})
+
+
+@app.route('/api/parent/reset-password', methods=['POST'])
+def parent_reset_password():
+    """Reset password with OTP"""
+    data = request.json
+    mobile = data.get('mobile')
+    otp = data.get('otp')
+    new_password = data.get('new_password')
+    
+    if verification_store.get(mobile) != otp:
+        return jsonify({"success": False, "message": "❌ OTP गलत है"}), 400
+    
+    hashed = bcrypt.generate_password_hash(new_password).decode('utf-8')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_query(cursor, "UPDATE parent_accounts SET password = ? WHERE mobile = ?", (hashed, mobile))
+    conn.commit()
+    conn.close()
+    
+    verification_store.pop(mobile, None)
+    return jsonify({"success": True, "message": "✅ पासवर्ड बदल गया"})
+
+
+@app.route('/api/parent/notifications/<int:parent_id>', methods=['GET'])
+def parent_notifications(parent_id):
+    """Get all notifications for a parent"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Ensure parent_notifications table exists
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS parent_notifications (
+            id SERIAL PRIMARY KEY,
+            parent_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            title TEXT,
+            message TEXT NOT NULL,
+            type TEXT DEFAULT 'notice',
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    
+    # Get student_id from parent
+    execute_query(cursor, "SELECT student_id FROM parent_accounts WHERE id = ?", (parent_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"success": True, "notifications": []})
+    
+    student_id = row[0]
+    
+    execute_query(cursor, '''
+        SELECT id, title, message, type, is_read, created_at
+        FROM parent_notifications
+        WHERE student_id = ? OR parent_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+    ''', (student_id, parent_id))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    notifications = []
+    for r in rows:
+        notifications.append({
+            "id": r[0],
+            "title": r[1] or "सूचना",
+            "message": r[2],
+            "type": r[3] or "notice",
+            "is_read": bool(r[4]),
+            "created_at": r[5].strftime("%Y-%m-%d %H:%M") if r[5] else str(r[5])
+        })
+    
+    return jsonify({"success": True, "notifications": notifications})
+
+
+@app.route('/api/parent/notification/read/<int:notification_id>', methods=['POST'])
+def parent_mark_read(notification_id):
+    """Mark notification as read"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_query(cursor, "UPDATE parent_notifications SET is_read = TRUE WHERE id = ?", (notification_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route('/api/student/attendance/<int:student_id>', methods=['GET'])
+def get_student_attendance(student_id):
+    """Get attendance history for a student"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        SELECT date, status, class_name, section_name
+        FROM attendance_records
+        WHERE student_id = ?
+        ORDER BY date DESC
+        LIMIT 30
+    ''', (student_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    attendance = []
+    for r in rows:
+        attendance.append({
+            "date": r[0],
+            "status": r[1],
+            "class_name": r[2],
+            "section_name": r[3]
+        })
+    
+    return jsonify({"success": True, "attendance": attendance})
+
+
+# =====================================================================
+# 👨‍🏫 STAFF APP APIs
+# =====================================================================
+
+@app.route('/api/staff/login', methods=['POST'])
+def staff_login():
+    """Staff login with mobile + password"""
+    data = request.json
+    mobile = data.get('mobile')
+    password = data.get('password')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, "SELECT id, name, designation, mobile, base_salary, password FROM staff WHERE mobile = ? AND status = 'Active'", (mobile,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return jsonify({"success": False, "message": "❌ Staff member not found"}), 401
+    
+    # Password check - if no password set, use mobile as default
+    stored_password = row[5]
+    if not stored_password or stored_password == '':
+        # First time login - set default password
+        hashed = bcrypt.generate_password_hash(mobile).decode('utf-8')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        execute_query(cursor, "UPDATE staff SET password = ? WHERE id = ?", (hashed, row[0]))
+        conn.commit()
+        conn.close()
+        stored_password = hashed
+    
+    if bcrypt.check_password_hash(stored_password, password):
+        token = jwt.encode({'staff_id': row[0], 'mobile': mobile}, SECRET_KEY, algorithm='HS256')
+        return jsonify({
+            "success": True,
+            "token": token,
+            "staff": {
+                "id": row[0],
+                "name": row[1],
+                "designation": row[2],
+                "mobile": row[3],
+                "base_salary": row[4]
+            }
+        })
+    
+    return jsonify({"success": False, "message": "❌ गलत पासवर्ड"}), 401
+
+
+@app.route('/api/staff/verify', methods=['GET'])
+def staff_verify():
+    """Verify staff JWT token"""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        staff_id = payload.get('staff_id')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        execute_query(cursor, "SELECT id, name, designation, mobile, base_salary FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return jsonify({
+                "success": True,
+                "staff": {
+                    "id": row[0],
+                    "name": row[1],
+                    "designation": row[2],
+                    "mobile": row[3],
+                    "base_salary": row[4]
+                }
+            })
+        
+        return jsonify({"success": False, "message": "Invalid token"}), 401
+    except:
+        return jsonify({"success": False, "message": "Invalid token"}), 401
+
+
+@app.route('/api/staff/notifications/<int:staff_id>', methods=['GET'])
+def staff_notifications(staff_id):
+    """Get staff notifications"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Ensure staff_notifications table exists
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS staff_notifications (
+            id SERIAL PRIMARY KEY,
+            staff_id INTEGER NOT NULL,
+            title TEXT,
+            message TEXT NOT NULL,
+            type TEXT DEFAULT 'notice',
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    
+    execute_query(cursor, '''
+        SELECT id, title, message, type, is_read, created_at
+        FROM staff_notifications
+        WHERE staff_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+    ''', (staff_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    notifications = []
+    for r in rows:
+        notifications.append({
+            "id": r[0],
+            "title": r[1] or "सूचना",
+            "message": r[2],
+            "type": r[3] or "notice",
+            "is_read": bool(r[4]),
+            "created_at": r[5].strftime("%Y-%m-%d %H:%M") if r[5] else str(r[5])
+        })
+    
+    return jsonify({"success": True, "notifications": notifications})
+
+
+@app.route('/api/staff/notification/read/<int:notification_id>', methods=['POST'])
+def staff_mark_read(notification_id):
+    """Mark staff notification as read"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_query(cursor, "UPDATE staff_notifications SET is_read = TRUE WHERE id = ?", (notification_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route('/api/staff/attendance/today/<int:staff_id>', methods=['GET'])
+def staff_attendance_today(staff_id):
+    """Get today's attendance for staff"""
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        SELECT id, check_in_time, check_out_time, status, late_fine
+        FROM staff_attendance
+        WHERE staff_id = ? AND date = ?
+    ''', (staff_id, today_str))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return jsonify({
+            "success": True,
+            "attendance": {
+                "id": row[0],
+                "check_in_time": row[1],
+                "check_out_time": row[2],
+                "status": row[3],
+                "late_fine": row[4]
+            }
+        })
+    
+    return jsonify({"success": True, "attendance": None})
+
+
+@app.route('/api/staff/attendance/history/<int:staff_id>', methods=['GET'])
+def staff_attendance_history(staff_id):
+    """Get attendance history for staff"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        SELECT date, check_in_time, check_out_time, status
+        FROM staff_attendance
+        WHERE staff_id = ?
+        ORDER BY date DESC
+        LIMIT 30
+    ''', (staff_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    attendance = []
+    for r in rows:
+        attendance.append({
+            "date": r[0],
+            "check_in_time": r[1] or "--:--",
+            "check_out_time": r[2] or "--:--",
+            "status": r[3] or "N/A"
+        })
+    
+    return jsonify({"success": True, "attendance": attendance})
+
+
+@app.route('/api/staff/attendance/checkin', methods=['POST'])
+def staff_checkin():
+    """Staff check-in"""
+    data = request.json
+    staff_id = data.get('staff_id')
+    
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    current_time = datetime.now().strftime("%H:%M:%S")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check if already checked in today
+    execute_query(cursor, "SELECT id FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
+    existing = cursor.fetchone()
+    
+    if existing:
+        conn.close()
+        return jsonify({"success": False, "message": "Already checked in today"}), 400
+    
+    execute_query(cursor, '''
+        INSERT INTO staff_attendance (staff_id, date, check_in_time, status)
+        VALUES (?, ?, ?, 'Present')
+    ''', (staff_id, today_str, current_time))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True, "message": "✅ Check-in successful"})
+
+
+@app.route('/api/staff/attendance/checkout', methods=['POST'])
+def staff_checkout():
+    """Staff check-out"""
+    data = request.json
+    staff_id = data.get('staff_id')
+    
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    current_time = datetime.now().strftime("%H:%M:%S")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        UPDATE staff_attendance 
+        SET check_out_time = ? 
+        WHERE staff_id = ? AND date = ? AND check_out_time IS NULL
+    ''', (current_time, staff_id, today_str))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"success": True, "message": "✅ Check-out successful"})
+
+
+@app.route('/api/staff/students/<int:staff_id>', methods=['GET'])
+def staff_students(staff_id):
+    """Get students assigned to a staff member"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get staff's class/section from staff table
+    execute_query(cursor, "SELECT designation FROM staff WHERE id = ?", (staff_id,))
+    staff = cursor.fetchone()
+    
+    # For demo - return all students if no specific class assigned
+    execute_query(cursor, '''
+        SELECT id, name, class, section, status
+        FROM students
+        WHERE status = 'Active'
+        ORDER BY name
+        LIMIT 20
+    ''')
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    students = []
+    for r in rows:
+        students.append({
+            "id": r[0],
+            "name": r[1],
+            "class": r[2],
+            "section": r[3],
+            "status": "Present"  # Default status
+        })
+    
+    return jsonify({"success": True, "students": students})
+
+
+@app.route('/api/staff/dashboard-stats', methods=['GET'])
+def staff_dashboard_stats():
+    """Get staff dashboard statistics"""
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Total students
+    execute_query(cursor, "SELECT COUNT(*) FROM students WHERE status = 'Active'")
+    total_students = cursor.fetchone()[0] or 0
+    
+    # Present today
+    execute_query(cursor, "SELECT COUNT(*) FROM staff_attendance WHERE date = ?", (today_str,))
+    present_today = cursor.fetchone()[0] or 0
+    
+    # Absent today (total - present)
+    absent_today = max(0, total_students - present_today)
+    
+    conn.close()
+    
+    return jsonify({
+        "success": True,
+        "stats": {
+            "total_students": total_students,
+            "present_today": present_today,
+            "absent_today": absent_today
+        }
+    })
+    
+@app.route('/api/staff/update-profile/<int:staff_id>', methods=['PUT'])
+def update_staff_profile(staff_id):
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        UPDATE staff SET 
+            roll = ?, subject = ?, class_teacher = ?, 
+            assigned_class = ?, assigned_section = ?
+        WHERE id = ?
+    ''', (
+        data.get('roll', 'Teacher'),
+        data.get('subject', ''),
+        data.get('class_teacher', ''),
+        data.get('assigned_class', ''),
+        data.get('assigned_section', ''),
+        staff_id
+    ))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "Staff profile updated"}) 
+
+@app.route('/api/staff/assigned-students/<int:staff_id>', methods=['GET'])
+def get_assigned_students(staff_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, "SELECT assigned_class, assigned_section FROM staff WHERE id = ?", (staff_id,))
+    staff = cursor.fetchone()
+    
+    if not staff or not staff[0]:
+        conn.close()
+        return jsonify({"success": True, "students": []})
+    
+    assigned_class, assigned_section = staff
+    
+    query = "SELECT id, name, roll_no, class, section FROM students WHERE class = ? AND status = 'Active'"
+    params = [assigned_class]
+    if assigned_section:
+        query += " AND section = ?"
+        params.append(assigned_section)
+    
+    execute_query(cursor, query, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    students = []
+    for r in rows:
+        students.append({
+            "id": r[0],
+            "name": r[1],
+            "roll_no": r[2],
+            "class": r[3],
+            "section": r[4]
+        })
+    
+    return jsonify({"success": True, "students": students})
+
+@app.route('/api/staff/qr-checkin', methods=['POST'])
+def staff_qr_checkin():
+    """QR Code se staff attendance mark karna"""
+    data = request.json
+    staff_id = data.get('staff_id')
+    qr_data = data.get('qr_data', {})
+    latitude = data.get('latitude', 0)
+    longitude = data.get('longitude', 0)
+    device_token = data.get('device_token', '')
+    
+    if not staff_id:
+        return jsonify({"success": False, "message": "Staff ID not found"}), 400
+    
+    try:
+        # ✅ 1. Staff validate karo
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        execute_query(cursor, "SELECT id, name, mobile, device_token FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
+        staff = cursor.fetchone()
+        
+        if not staff:
+            conn.close()
+            return jsonify({"success": False, "message": "Staff not found or inactive"}), 404
+        
+        staff_name, mobile, registered_device = staff
+        
+        # ✅ 2. Device token check (Ek mobile se ek staff)
+        if device_token:
+            # Check if device is linked to another staff
+            execute_query(cursor, "SELECT name FROM staff WHERE device_token = ? AND id != ? AND status = 'Active'", (device_token, staff_id))
+            existing_owner = cursor.fetchone()
+            if existing_owner:
+                conn.close()
+                return jsonify({"success": False, "message": f"❌ This device is already linked to {existing_owner[0]}"}), 403
+            
+            # Link device if not registered
+            if not registered_device:
+                execute_query(cursor, "UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
+                conn.commit()
+        
+        # ✅ 3. Check if already checked in today
+        today_str = datetime.now().strftime("%d/%m/%Y")
+        execute_query(cursor, "SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
+        existing = cursor.fetchone()
+        
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        if existing:
+            attn_id, check_in, check_out = existing
+            if check_out:
+                conn.close()
+                return jsonify({"success": False, "message": "❌ Already checked out today"}), 400
+            
+            # ✅ Already checked in -> Check out
+            execute_query(cursor, "UPDATE staff_attendance SET check_out_time = ? WHERE id = ?", (current_time, attn_id))
+            conn.commit()
+            conn.close()
+            
+            # ✅ Telegram message for Check-out
+            try:
+                telegram_msg = (
+                    f"🚗 *CAMPUS EXIT* ✅\n\n"
+                    f"👨‍🏫 *Staff:* {staff_name}\n"
+                    f"⏱️ *Exit Time:* {current_time}\n"
+                    f"📱 *Mobile:* {mobile}\n\n"
+                    f"_Powered by A.B.Digital Work_"
+                )
+                send_telegram_msg(telegram_msg)
+            except Exception as e:
+                print(f"Telegram error: {e}")
+            
+            return jsonify({"success": True, "message": "✅ Campus Exit successful!", "action": "checkout"})
+        
+        # ✅ 4. New check-in with location validation
+        # Get school location from settings
+        execute_query(cursor, "SELECT school_latitude, school_longitude, allowed_radius_meters FROM attendance_rules WHERE id = 1")
+        rules = cursor.fetchone()
+        
+        if rules:
+            school_lat, school_lng, allowed_radius = rules
+            distance = calculate_distance_meters(school_lat, school_lng, latitude, longitude)
+            
+            if distance > (allowed_radius or 100):
+                conn.close()
+                return jsonify({
+                    "success": False, 
+                    "message": f"❌ You are {round(distance)} meters away from school (Allowed: {allowed_radius or 100}m)"
+                }), 403
+        
+        # ✅ 5. Insert attendance (Check-in)
+        execute_query(cursor, '''
+            INSERT INTO staff_attendance (staff_id, date, check_in_time, status, leave_type)
+            VALUES (?, ?, ?, 'Present', 'Present')
+        ''', (staff_id, today_str, current_time))
+        conn.commit()
+        conn.close()
+        
+        # ✅ Telegram message for Check-in
+        try:
+            telegram_msg = (
+                f"🏫 *CAMPUS ENTRY* ✅\n\n"
+                f"👨‍🏫 *Staff:* {staff_name}\n"
+                f"⏱️ *Entry Time:* {current_time}\n"
+                f"📱 *Mobile:* {mobile}\n\n"
+                f"_Powered by A.B.Digital Work_"
+            )
+            send_telegram_msg(telegram_msg)
+        except Exception as e:
+            print(f"Telegram error: {e}")
+        
+        return jsonify({"success": True, "message": "✅ Campus Entry successful!", "action": "checkin"})
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"success": False, "message": str(e)}), 500
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
