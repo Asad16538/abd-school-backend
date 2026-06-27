@@ -2099,18 +2099,23 @@ def unique_fetch_expenses_list_route():
 def unique_fetch_financial_summary_route():
     try:
         conn = get_db_connection()
-        conn.row_factory = None
         cursor = conn.cursor()
         
-        execute_query(cursor, "SELECT SUM(amount) FROM expenses")
-        res_exp = cursor.fetchone()
-        total_expenses = (res_exp[0] if res_exp else 0.0) or 0.0
+        # ✅ Check if expenses table exists and has data
+        try:
+            execute_query(cursor, "SELECT COALESCE(SUM(amount), 0) FROM expenses")
+            res_exp = cursor.fetchone()
+            total_expenses = float(res_exp[0]) if res_exp and res_exp[0] else 0.0
+        except Exception as e:
+            print(f"Expenses query error: {e}")
+            total_expenses = 0.0
         
         try:
-            execute_query(cursor, "SELECT SUM(school_fee_paid + transport_fee_paid) FROM students")
+            execute_query(cursor, "SELECT COALESCE(SUM(school_fee_paid + transport_fee_paid), 0) FROM students")
             res_inc = cursor.fetchone()
-            total_income = (res_inc[0] if res_inc else 0.0) or 0.0
+            total_income = float(res_inc[0]) if res_inc and res_inc[0] else 0.0
         except Exception as sql_err:
+            print(f"Income query error: {sql_err}")
             total_income = 0.0
         
         net_profit = total_income - total_expenses
@@ -2123,7 +2128,7 @@ def unique_fetch_financial_summary_route():
             "net_profit": net_profit
         })
     except Exception as e:
-        if 'conn' in locals(): conn.close()
+        print(f"Financial summary error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     
 # 🗑️ STAFF PROFILE DELETE API ENDPOINT (FIXED FOR POST/DELETE METHODS)
