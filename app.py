@@ -1429,7 +1429,7 @@ def manage_attendance_rules():
 def mark_staff_attendance():
     data = request.json or {}
     staff_id = data.get('staff_id')
-    device_token = data.get('device_token', '').strip() # 👈 Frontend se browser device fingerprint receive kiya
+    device_token = data.get('device_token', '').strip()
     
     try:
         user_lat = float(data.get('latitude', 0))
@@ -1438,7 +1438,6 @@ def mark_staff_attendance():
         user_lat = 0.0
         user_lng = 0.0
     
-    # 🎯 COMMERCIAL GUARD: Agar mobile local HTTP ya permission block ke karan 0.0 bhejta hai
     if user_lat == 0.0 or user_lng == 0.0:
         return jsonify({
             "success": False,
@@ -1449,12 +1448,10 @@ def mark_staff_attendance():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Dynamic Safe Fallbacks Initializers
     school_lat = 0.0
     school_lng = 0.0
-    allowed_radius = 50.0  # Safe system default radius
+    allowed_radius = 50.0
     
-    # 🎯 STEP 1: Setting Page Wale Sahi Coordinates Direct school_settings Se Load Karo
     try:
         execute_query(cursor, "SELECT * FROM school_settings LIMIT 1")
         settings_row = cursor.fetchone()
@@ -1471,19 +1468,16 @@ def mark_staff_attendance():
                     if settings_row[idx] is not None:
                         allowed_radius = float(settings_row[idx])
     except Exception as e:
-        print("⚠️ school_settings fetch handled safely, moving to fallback:", e)
+        print("⚠️ school_settings fetch handled safely:", e)
 
-    # 🎯 STEP 2: Main Shift Timings Aur Rules Table Backup Link
     try:
         execute_query(cursor, "SELECT allowed_radius_meters, shift_start_time, late_buffer_minutes, late_fine_per_minute, shift_end_time, school_latitude, school_longitude FROM attendance_rules WHERE id = 1")
         time_rule = cursor.fetchone()
         if time_rule:
             rule_radius, start_time, buffer_min, late_fine_rate, end_time, rule_lat, rule_lng = time_rule
-            
             if school_lat == 0.0 or school_lng == 0.0:
                 school_lat = float(rule_lat) if rule_lat else 24.7432
                 school_lng = float(rule_lng) if rule_lng else 78.8561
-            
             if allowed_radius == 50.0 and rule_radius:
                 allowed_radius = float(rule_radius)
         else:
@@ -1495,12 +1489,11 @@ def mark_staff_attendance():
         start_time, buffer_min, late_fine_rate, end_time = '08:00', 15, 0.0, '14:00'
         if school_lat == 0.0 or school_lng == 0.0:
             school_lat, school_lng = 24.7432, 78.8561
-        
+    
     print(f"--- LIVE ERP LOCATION VERIFIER ---")
     print(f"Active Operational Spot (Target Panel): Lat={school_lat}, Lng={school_lng} | Allowed Range={allowed_radius}M")
     print(f"Staff Punch In Spot (Device GPS): Lat={user_lat}, Lng={user_lng}")
     
-    # 🎯 STEP 3: Distance Matrix Range Calculation Check
     try:
         distance = calculate_distance_meters(school_lat, school_lng, user_lat, user_lng)
     except Exception as distance_err:
@@ -1514,15 +1507,14 @@ def mark_staff_attendance():
             "error": f"❌ Scope Bound Error: Aap campus range se {round(distance - allowed_radius)} meters door hain!"
         }), 403
         
-    # Date Time Initialization Setup
     now = datetime.now()
-    today_str = now.strftime("%d/%m/%Y") # 👈 Ab database me exact DD/MM/YYYY format me save hoga!
+    today_str = now.strftime("%d/%m/%Y")
     current_time_str = now.strftime("%H:%M:%S")
     current_hour = now.hour
     
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     
-    # Staff / Profile Validity Verification (Tightly mapped to intercept registered tokens)
+    # ✅ FIXED - CURSOR ADDED
     execute_query(cursor, "SELECT name, mobile, device_token FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
     staff_row = cursor.fetchone()
     if not staff_row:
@@ -1530,9 +1522,8 @@ def mark_staff_attendance():
         return jsonify({"success": False, "error": "Staff profile not active or found."}), 404
     staff_name, mobile, registered_device = staff_row
     
-    # 🔥 ANTI-PROXY DEVICE BINDING ENGINE: (Bina locha ke solid logic)
     if device_token:
-        # 🛡️ STEP 1: Pehle hi check karlo ki yeh device kisi DOOSRE staff member par toh locked nahi hai
+        # ✅ FIXED - CURSOR ADDED
         execute_query(cursor, "SELECT name FROM staff WHERE device_token = ? AND id != ? AND status = 'Active'", (device_token, staff_id))
         existing_owner = cursor.fetchone()
         
@@ -1543,13 +1534,11 @@ def mark_staff_attendance():
                 "error": f"❌ Proxy Blocked! Yeh mobile pehle se Mr./Ms. {existing_owner[0]} ke naam par locked hai. Ek mobile se doosra staff punch nahi kar sakta!"
             }), 403
 
-        # 🛡️ STEP 2: Agar device fresh hai aur kisi ke paas nahi hai, toh pehli baar par is staff se link kardo
+        # ✅ FIXED - CURSOR ADDED
         if not registered_device:
-            execute_query("UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
+            execute_query(cursor, "UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
             conn.commit()
             print(f"🔒 [DEVICE RECOGNIZED & LOCKED]: Staff '{staff_name}' is now tightly linked to device footprint.")
-        
-        # 🛡️ STEP 3: Agar phone pehle se register hai par naye token se match nahi khata (Fraud attempt)
         elif registered_device != device_token:
             conn.close()
             return jsonify({
@@ -1557,17 +1546,15 @@ def mark_staff_attendance():
                 "error": "❌ Access Denied: Proxy Blocked! Aap kisi doosre staff ke mobile se apni attendance nahi laga sakte hain."
             }), 403
     
-    # Check for Existing Attendance Streams
+    # ✅ FIXED - CURSOR ADDED
     execute_query(cursor, "SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
     attendance_record = cursor.fetchone()
     
-    # Mobile formatting connection string cleanup
     formatted_mobile = str(mobile).strip() if mobile else ""
     if formatted_mobile and not formatted_mobile.startswith('91') and len(formatted_mobile) == 10:
         formatted_mobile = f"91{formatted_mobile}"
 
     if not attendance_record:
-        # 🚪 SCAN 1: CAMPUS ENTRY (Check-In)
         late_fine = 0.0
         status = "On-Time"
         late_minutes = 0
@@ -1575,31 +1562,26 @@ def mark_staff_attendance():
         try:
             start_h, start_m = map(int, start_time.split(':'))
             actual_start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-            
             import datetime as dt_module
             buffer_deadline = actual_start + dt_module.timedelta(minutes=int(buffer_min))
-            
             if now > buffer_deadline:
                 status = "Late"
                 late_minutes = round((now - actual_start).total_seconds() / 60)
                 late_fine = late_minutes * float(late_fine_rate if late_fine_rate else 0)
-                print(f"⚠️ [LATE DETECTED] Staff is delayed by {late_minutes} Mins. Status: Late")
         except Exception as e:
             print("⚠️ Late fine math calculation failed safely:", e)
-            
-        execute_query("INSERT INTO staff_attendance (staff_id, date, check_in_time, status, late_fine, leave_type) VALUES (?, ?, ?, ?, ?, 'Present')",
+        
+        execute_query(cursor, "INSERT INTO staff_attendance (staff_id, date, check_in_time, status, late_fine, leave_type) VALUES (?, ?, ?, ?, ?, 'Present')",
                        (staff_id, today_str, current_time_str, status, late_fine))
         conn.commit()
         conn.close()
         
-        # 🧾 AUTOMATED HINDI/ENGLISH MIXED WHATSAPP BLUEPRINT (With 3-Late warning alert)
         whatsapp_msg = (
             f"✨ *{greeting} Mr. {staff_name}*,\n\n"
             f"Your *CAMPUS ENTRY* attendance has been marked successfully. ✅\n\n"
             f"⏱️ *Entry Time:* {current_time_str}\n"
             f"📊 *Status:* {status}\n"
         )
-        
         if status == "Late":
             whatsapp_msg += (
                 f"⚠️ *Delayed Minutes:* {late_minutes} Mins\n\n"
@@ -1607,7 +1589,6 @@ def mark_staff_attendance():
             )
         else:
             whatsapp_msg += f"\nHave a great and productive day ahead! 🏫\n"
-            
         whatsapp_msg += f"_Powered by: A.B.Digital Work_"
         
         try:
@@ -1618,7 +1599,6 @@ def mark_staff_attendance():
         return jsonify({"success": True, "message": f"Campus Entry Complete! Status: {status}"})
 
     else:
-        # 🚗 SCAN 2: CAMPUS EXIT (Check-Out)
         attn_id, check_in, check_out = attendance_record
         if check_out:
             conn.close()
@@ -1630,14 +1610,13 @@ def mark_staff_attendance():
         try:
             end_h, end_m = map(int, end_time.split(':'))
             shift_end_datetime = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-            
             if now < shift_end_datetime:
                 is_half_day = 1
                 half_day_text = "\n⚠️ *Status Updated:* Half-Day Rule Active (Early Departure Logged)"
         except Exception as e:
             print("⚠️ Half-day check runtime evaluation error:", e)
-            
-        execute_query("UPDATE staff_attendance SET check_out_time = ?, is_half_day = ? WHERE id = ?", (current_time_str, is_half_day, attn_id))
+        
+        execute_query(cursor, "UPDATE staff_attendance SET check_out_time = ?, is_half_day = ? WHERE id = ?", (current_time_str, is_half_day, attn_id))
         conn.commit()
         conn.close()
         
@@ -1649,11 +1628,12 @@ def mark_staff_attendance():
             f"Thank you for your valuable services today! Have a safe journey home. 🙏\n"
             f"_Powered by: A.B.Digital Work_"
         )
-        # EXIT wale block mein ye likho:
         try:
             send_telegram_msg(whatsapp_msg)
         except Exception as e:
             print(f"⚠️ Telegram Error: {e}")
+        
+        return jsonify({"success": True, "message": "Campus Exit Complete!"})
     
 # ==================== 📍 QR ATTENDANCE APIs (YAHAN SE PASTE KARO) ====================
 
