@@ -2124,20 +2124,29 @@ def delete_staff_profile(staff_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # 1. Staff ko main table se saaf kiya
+        # ✅ Check if staff exists
+        execute_query(cursor, "SELECT id, name FROM staff WHERE id = ?", (staff_id,))
+        staff = cursor.fetchone()
+        
+        if not staff:
+            conn.close()
+            return jsonify({"success": False, "error": "Staff not found"}), 404
+        
+        # ✅ Delete staff
         execute_query(cursor, "DELETE FROM staff WHERE id = ?", (staff_id,))
         
-        # 2. Saath hi uski saari attendance history ko bhi drop kiya taaki integrity bani rahe
+        # ✅ Delete staff attendance records
         execute_query(cursor, "DELETE FROM staff_attendance WHERE staff_id = ?", (staff_id,))
         
         conn.commit()
         conn.close()
         
-        # Sateek response format jo aapka frontend mangta hai
-        return jsonify({"success": True, "message": "🎉 Staff profile successfully delete ho gayi hai!"}), 200
+        return jsonify({"success": True, "message": "Staff deleted successfully!"}), 200
+        
     except Exception as e:
-        if 'conn' in locals(): conn.close()
-        print("❌ Staff Delete Method Error Log:", str(e))
+        if 'conn' in locals():
+            conn.close()
+        print(f"❌ Staff Delete Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     
 # 📡 API ROUTE: FETCH STUDENTS FOR CLASS-WISE ID CARD GENERATION (SMART STREAM PARSER)
