@@ -2132,16 +2132,19 @@ def delete_staff_profile(staff_id):
             conn.close()
             return jsonify({"success": False, "error": "Staff not found"}), 404
         
+        staff_name = staff[1]
+        
+        # ✅ Delete attendance records first
+        execute_query(cursor, "DELETE FROM staff_attendance WHERE staff_id = ?", (staff_id,))
+        
         # ✅ Delete staff
         execute_query(cursor, "DELETE FROM staff WHERE id = ?", (staff_id,))
-        
-        # ✅ Delete staff attendance records
-        execute_query(cursor, "DELETE FROM staff_attendance WHERE staff_id = ?", (staff_id,))
         
         conn.commit()
         conn.close()
         
-        return jsonify({"success": True, "message": "Staff deleted successfully!"}), 200
+        print(f"🗑️ Staff deleted: {staff_name} (ID: {staff_id})")
+        return jsonify({"success": True, "message": f"Staff {staff_name} deleted successfully!"}), 200
         
     except Exception as e:
         if 'conn' in locals():
