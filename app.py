@@ -3745,6 +3745,418 @@ def staff_qr_checkin():
         if 'conn' in locals():
             conn.close()
         return jsonify({"success": False, "message": str(e)}), 500
+    
+# =====================================================================
+# 📚 BOARD SETTINGS API
+# =====================================================================
+
+@app.route('/api/board-settings', methods=['GET', 'POST'])
+def manage_board_settings():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if request.method == 'GET':
+        execute_query(cursor, "SELECT board_name, exam_pattern FROM board_settings LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return jsonify({
+                "success": True,
+                "board_name": row[0],
+                "exam_pattern": row[1]
+            })
+        return jsonify({"success": True, "board_name": "CBSE", "exam_pattern": "{}"})
+    
+    else:  # POST
+        data = request.json
+        board_name = data.get('board_name', 'CBSE')
+        exam_pattern = data.get('exam_pattern', '{}')
+        
+        execute_query(cursor, '''
+            UPDATE board_settings SET board_name = ?, exam_pattern = ? WHERE id = 1
+        ''', (board_name, exam_pattern))
+        
+        if cursor.rowcount == 0:
+            execute_query(cursor, '''
+                INSERT INTO board_settings (board_name, exam_pattern) VALUES (?, ?)
+            ''', (board_name, exam_pattern))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Board updated to {board_name}"})
+    
+# =====================================================================
+# 📊 GRADE SYSTEM API
+# =====================================================================
+
+@app.route('/api/grade-system', methods=['GET', 'POST'])
+def manage_grade_system():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if request.method == 'GET':
+        execute_query(cursor, "SELECT grade_name, min_percentage, max_percentage, description FROM grade_system ORDER BY min_percentage DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        grades = []
+        for r in rows:
+            grades.append({
+                "grade": r[0],
+                "min": r[1],
+                "max": r[2],
+                "description": r[3]
+            })
+        return jsonify({"success": True, "grades": grades})
+    
+    else:  # POST
+        data = request.json
+        grades = data.get('grades', [])
+        
+        # Delete existing
+        execute_query(cursor, "DELETE FROM grade_system")
+        
+        # Insert new grades
+        for g in grades:
+            execute_query(cursor, '''
+                INSERT INTO grade_system (grade_name, min_percentage, max_percentage, description)
+                VALUES (?, ?, ?, ?)
+            ''', (g['grade'], g['min'], g['max'], g['description']))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Grade system updated"})
+    
+# =====================================================================
+# 📚 EXAM TEMPLATES API
+# =====================================================================
+
+@app.route('/api/exam-templates', methods=['GET'])
+def get_exam_templates():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, "SELECT board_name, template_data FROM exam_templates WHERE is_active = TRUE")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    templates = {}
+    for r in rows:
+        templates[r[0]] = r[1]
+    
+    return jsonify({"success": True, "templates": templates})
+
+# =====================================================================
+# 📝 CREATE EXAM API
+# =====================================================================
+
+@app.route('/api/exams/create', methods=['POST'])
+def create_exam():
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if exam already exists
+        execute_query(cursor, '''
+            SELECT id FROM exams WHERE exam_name = ? AND class = ? AND section = ? AND subject = ?
+        ''', (data.get('exam_name'), data.get('class'), data.get('section'), data.get('subject')))
+        
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"success": False, "error": "Exam already exists for this class and subject"}), 400
+        
+        # Generate exam_id
+        exam_id = f"{data.get('exam_type', 'exam').lower().replace(' ', '_')}_{data.get('class')}"
+        
+        execute_query(cursor, '''
+            INSERT INTO exams (exam_id, exam_name, class, section, subject, max_marks, passing_marks, weightage, date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            exam_id,
+            data.get('exam_name'),
+            data.get('class'),
+            data.get('section'),
+            data.get('subject'),
+            int(data.get('max_marks', 100)),
+            int(data.get('passing_marks', 33)),
+            int(data.get('weightage', 0)),
+            data.get('date')
+        ))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Exam created successfully"})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    
+# =====================================================================
+# 📋 GET ALL EXAMS API
+# =====================================================================
+
+@app.route('/api/exams', methods=['GET'])
+def get_all_exams():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    class_filter = request.args.get('class')
+    subject_filter = request.args.get('subject')
+    
+    query = "SELECT id, exam_id, exam_name, class, section, subject, max_marks, passing_marks, weightage, date FROM exams"
+    params = []
+    conditions = []
+    
+    if class_filter:
+        conditions.append("class = ?")
+        params.append(class_filter)
+    if subject_filter:
+        conditions.append("subject = ?")
+        params.append(subject_filter)
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
+    query += " ORDER BY date DESC"
+    
+    execute_query(cursor, query, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    exams = []
+    for r in rows:
+        exams.append({
+            "id": r[0],
+            "exam_id": r[1],
+            "exam_name": r[2],
+            "class": r[3],
+            "section": r[4],
+            "subject": r[5],
+            "max_marks": r[6],
+            "passing_marks": r[7],
+            "weightage": r[8],
+            "date": r[9]
+        })
+    
+    return jsonify({"success": True, "exams": exams})
+
+# =====================================================================
+# 👨‍🎓 GET STUDENTS FOR EXAM API
+# =====================================================================
+
+@app.route('/api/exams/<int:exam_id>/students', methods=['GET'])
+def get_students_for_exam(exam_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get exam details
+    execute_query(cursor, '''
+        SELECT id, exam_name, class, section, subject, max_marks FROM exams WHERE id = ?
+    ''', (exam_id,))
+    exam = cursor.fetchone()
+    
+    if not exam:
+        conn.close()
+        return jsonify({"success": False, "error": "Exam not found"}), 404
+    
+    # Get students
+    execute_query(cursor, '''
+        SELECT id, roll_no, name FROM students 
+        WHERE class = ? AND section = ? AND status = 'Active'
+        ORDER BY roll_no ASC
+    ''', (exam[2], exam[3]))
+    
+    students = cursor.fetchall()
+    
+    # Get existing marks
+    execute_query(cursor, '''
+        SELECT student_id, marks_obtained, grade FROM exam_marks WHERE exam_id = ?
+    ''', (exam_id,))
+    marks = cursor.fetchall()
+    
+    conn.close()
+    
+    marks_dict = {}
+    for m in marks:
+        marks_dict[m[0]] = {"marks_obtained": m[1], "grade": m[2]}
+    
+    student_list = []
+    for s in students:
+        student_list.append({
+            "id": s[0],
+            "roll_no": s[1],
+            "name": s[2],
+            "marks_obtained": marks_dict.get(s[0], {}).get("marks_obtained", None),
+            "grade": marks_dict.get(s[0], {}).get("grade", None)
+        })
+    
+    return jsonify({
+        "success": True,
+        "exam": {
+            "id": exam[0],
+            "exam_name": exam[1],
+            "class": exam[2],
+            "section": exam[3],
+            "subject": exam[4],
+            "max_marks": exam[5]
+        },
+        "students": student_list
+    })
+    
+# =====================================================================
+# 💾 SAVE MARKS API
+# =====================================================================
+
+@app.route('/api/exams/save-marks', methods=['POST'])
+def save_exam_marks():
+    data = request.json
+    exam_id = data.get('exam_id')
+    marks_list = data.get('marks', [])
+    
+    if not exam_id:
+        return jsonify({"success": False, "error": "Exam ID required"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Get exam details
+        execute_query(cursor, "SELECT max_marks, class, section FROM exams WHERE id = ?", (exam_id,))
+        exam = cursor.fetchone()
+        
+        if not exam:
+            conn.close()
+            return jsonify({"success": False, "error": "Exam not found"}), 404
+        
+        max_marks = exam[0]
+        
+        for m in marks_list:
+            student_id = m.get('student_id')
+            marks_obtained = float(m.get('marks_obtained', 0))
+            
+            # Calculate grade
+            percentage = (marks_obtained / max_marks) * 100 if max_marks > 0 else 0
+            grade = get_grade_from_percentage(percentage)
+            
+            # Insert or update
+            execute_query(cursor, '''
+                INSERT INTO exam_marks (exam_id, student_id, marks_obtained, grade)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(exam_id, student_id) 
+                DO UPDATE SET marks_obtained = ?, grade = ?
+            ''', (exam_id, student_id, marks_obtained, grade, marks_obtained, grade))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "message": "Marks saved successfully"})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def get_grade_from_percentage(percentage):
+    """Helper function to get grade from percentage"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    execute_query(cursor, '''
+        SELECT grade_name FROM grade_system 
+        WHERE min_percentage <= ? AND max_percentage >= ?
+        LIMIT 1
+    ''', (percentage, percentage))
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    return row[0] if row else "F"
+
+# =====================================================================
+# 📊 GENERATE RESULT API
+# =====================================================================
+
+@app.route('/api/exams/generate-result/<int:exam_id>', methods=['POST'])
+def generate_exam_result(exam_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Get exam details
+        execute_query(cursor, '''
+            SELECT id, class, section, subject, max_marks FROM exams WHERE id = ?
+        ''', (exam_id,))
+        exam = cursor.fetchone()
+        
+        if not exam:
+            conn.close()
+            return jsonify({"success": False, "error": "Exam not found"}), 404
+        
+        # Get all marks
+        execute_query(cursor, '''
+            SELECT student_id, marks_obtained FROM exam_marks WHERE exam_id = ?
+        ''', (exam_id,))
+        marks = cursor.fetchall()
+        
+        # Calculate results
+        results = []
+        for m in marks:
+            student_id = m[0]
+            marks_obtained = m[1]
+            percentage = (marks_obtained / exam[4]) * 100 if exam[4] > 0 else 0
+            grade = get_grade_from_percentage(percentage)
+            
+            results.append({
+                "student_id": student_id,
+                "marks_obtained": marks_obtained,
+                "percentage": round(percentage, 2),
+                "grade": grade
+            })
+        
+        # Save results
+        for r in results:
+            execute_query(cursor, '''
+                INSERT INTO exam_results (student_id, class, section, total_marks, obtained_marks, percentage, grade)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(student_id, class, section) 
+                DO UPDATE SET total_marks = ?, obtained_marks = ?, percentage = ?, grade = ?
+            ''', (
+                r['student_id'], exam[1], exam[2], exam[4], r['marks_obtained'], r['percentage'], r['grade'],
+                exam[4], r['marks_obtained'], r['percentage'], r['grade']
+            ))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "message": "Result generated", "results": results})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    
+# =====================================================================
+# 🗑️ DELETE EXAM API
+# =====================================================================
+
+@app.route('/api/exams/<int:exam_id>', methods=['DELETE'])
+def delete_exam(exam_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Delete marks first (cascade will handle)
+        execute_query(cursor, "DELETE FROM exam_marks WHERE exam_id = ?", (exam_id,))
+        execute_query(cursor, "DELETE FROM exams WHERE id = ?", (exam_id,))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Exam deleted successfully"})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
