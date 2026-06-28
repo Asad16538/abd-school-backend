@@ -1371,28 +1371,56 @@ def manage_staff():
     if request.method == 'GET':
         # Check karenge ki kya frontend ne koi specific mobile number bheja hai
         mobile_filter = request.args.get('mobile', '').strip()
-        
         if mobile_filter:
-            # Clean format checks (91 handle karne ke liye)
             clean_mobile = mobile_filter[-10:] if len(mobile_filter) >= 10 else mobile_filter
             execute_query(cursor, "SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE (mobile LIKE ? OR mobile LIKE ?) AND status = 'Active'", (f"%{clean_mobile}", f"%{clean_mobile}"))
         else:
             execute_query(cursor, "SELECT id, name, designation, mobile, base_salary, status FROM staff WHERE status = 'Active'")
-            
         rows = cursor.fetchall()
         conn.close()
         return jsonify([{"id": r[0], "name": r[1], "designation": r[2], "mobile": r[3], "base_salary": r[4], "status": r[5]} for r in rows])
-    else:
-        data = request.json
-        if DATABASE_URL:
-            execute_query("INSERT INTO staff (name, designation, mobile, base_salary) VALUES (%s, %s, %s, %s)",
-                           (data.get('name'), data.get('designation'), str(data.get('mobile', '')).strip(), float(data.get('base_salary', 0))))
-        else:
-            execute_query("INSERT INTO staff (name, designation, mobile, base_salary) VALUES (?, ?, ?, ?)",
-                           (data.get('name'), data.get('designation'), str(data.get('mobile', '')).strip(), float(data.get('base_salary', 0))))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True, "message": "Staff member registered!"})
+    
+    else:  # POST - Add new staff
+        try:
+            data = request.json
+            name = data.get('name', '').strip()
+            designation = data.get('designation', '').strip()
+            mobile = str(data.get('mobile', '')).strip()
+            base_salary = float(data.get('base_salary', 0))
+            
+            # ✅ VALIDATION: Check if all required fields are present
+            if not name or not mobile:
+                conn.close()
+                return jsonify({"success": False, "error": "Name and Mobile are required!"}), 400
+            
+            # ✅ VALIDATION: Check if staff with same mobile already exists
+            execute_query(cursor, "SELECT id FROM staff WHERE mobile = ? AND status = 'Active'", (mobile,))
+            existing = cursor.fetchone()
+            if existing:
+                conn.close()
+                return jsonify({"success": False, "error": "Staff with this mobile number already exists!"}), 400
+            
+            # ✅ INSERT with all required fields
+            if DATABASE_URL:
+                execute_query(cursor, '''
+                    INSERT INTO staff (name, designation, mobile, base_salary, status, pf_enabled, pf_percentage, available_cl) 
+                    VALUES (%s, %s, %s, %s, 'Active', 0, 12.0, 12)
+                ''', (name, designation, mobile, base_salary))
+            else:
+                execute_query(cursor, '''
+                    INSERT INTO staff (name, designation, mobile, base_salary, status, pf_enabled, pf_percentage, available_cl) 
+                    VALUES (?, ?, ?, ?, 'Active', 0, 12.0, 12)
+                ''', (name, designation, mobile, base_salary))
+            
+            conn.commit()
+            conn.close()
+            return jsonify({"success": True, "message": "Staff member registered successfully!"})
+            
+        except Exception as e:
+            if 'conn' in locals():
+                conn.close()
+            print(f"❌ Error adding staff: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
 
 # ⚙️ 2. GET/UPDATE ATTENDANCE RULES API (FALLBACK SYSTEM FIXED ⚡)
 @app.route('/api/attendance-rules', methods=['GET', 'POST'])
