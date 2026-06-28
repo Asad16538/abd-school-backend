@@ -14,6 +14,7 @@ from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
 from datetime import datetime
+from flask import Flask
 import os
 PORT = int(os.environ.get('PORT', 10000))
 
@@ -3544,5 +3545,6 @@ def staff_qr_checkin():
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
+    # Render automatically PORT variable provide karta hai
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
