@@ -3279,27 +3279,58 @@ def staff_checkin():
     return jsonify({"success": True, "message": "✅ Check-in successful"})
 
 
-@app.route('/api/staff/attendance/checkout', methods=['POST'])
+@app.route('/api/staff/checkout', methods=['POST'])
 def staff_checkout():
-    """Staff check-out"""
+    """Staff check-out with Telegram notification"""
     data = request.json
     staff_id = data.get('staff_id')
     
-    today_str = datetime.now().strftime("%d/%m/%Y")
-    current_time = datetime.now().strftime("%H:%M:%S")
+    now = datetime.now()
+    today_str = now.strftime("%d/%m/%Y")
+    current_time_str = now.strftime("%H:%M:%S")
     
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    execute_query(cursor, '''
-        UPDATE staff_attendance 
-        SET check_out_time = ? 
-        WHERE staff_id = ? AND date = ? AND check_out_time IS NULL
-    ''', (current_time, staff_id, today_str))
+    # Check if checked in today
+    execute_query(cursor, "SELECT id, check_in_time FROM staff_attendance WHERE staff_id = ? AND date = ? AND check_out_time IS NULL", (staff_id, today_str))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        return jsonify({"success": False, "message": "❌ Aapne aaj entry nahi kiya hai. Pehle entry karein!"}), 400
+    
+    attendance_id = row[0]
+    check_in_time = row[1]
+    
+    # Update check-out time
+    execute_query(cursor, "UPDATE staff_attendance SET check_out_time = ? WHERE id = ?", (current_time_str, attendance_id))
     conn.commit()
+    
+    # Get staff details
+    execute_query(cursor, "SELECT name, mobile FROM staff WHERE id = ?", (staff_id,))
+    staff = cursor.fetchone()
+    staff_name = staff[0] if staff else "Staff"
+    
     conn.close()
     
-    return jsonify({"success": True, "message": "✅ Check-out successful"})
+    # ✅ TELEGRAM NOTIFICATION - Campus Exit
+    try:
+        telegram_msg = (
+            f"🚗 *CAMPUS EXIT* ✅\n\n"
+            f"👨‍🏫 *Staff:* {staff_name}\n"
+            f"🆔 *ID:* {staff_id}\n"
+            f"📅 *Date:* {today_str}\n"
+            f"⏱️ *Check-in Time:* {check_in_time}\n"
+            f"⏱️ *Exit Time:* {current_time_str}\n\n"
+            f"_Powered by A.B.Digital Work_"
+        )
+        send_telegram_msg(telegram_msg)
+        print(f"✅ Telegram exit notification sent for {staff_name}")
+    except Exception as e:
+        print(f"⚠️ Telegram exit notification failed: {e}")
+    
+    return jsonify({"success": True, "message": "🚗 Campus Exit successful!"})
 
 
 @app.route('/api/staff/students/<int:staff_id>', methods=['GET'])
