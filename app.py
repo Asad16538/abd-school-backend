@@ -309,6 +309,138 @@ def init_db():
         )
     ''')
     
+        # =====================================================================
+    # 📚 EXAM MANAGEMENT TABLES
+    # =====================================================================
+    
+    # 17. Board Settings Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS board_settings (
+            id SERIAL PRIMARY KEY,
+            board_name TEXT NOT NULL DEFAULT 'CBSE',
+            exam_pattern TEXT NOT NULL, -- JSON array
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 18. Exams Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS exams (
+            id SERIAL PRIMARY KEY,
+            exam_id TEXT NOT NULL, -- pt1, term1, quarterly, half_yearly, annual
+            exam_name TEXT NOT NULL,
+            class TEXT NOT NULL,
+            section TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            max_marks INTEGER DEFAULT 100,
+            passing_marks INTEGER DEFAULT 33,
+            weightage INTEGER DEFAULT 0,
+            date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(exam_id, class, section, subject)
+        )
+    ''')
+    
+    # 19. Exam Marks Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS exam_marks (
+            id SERIAL PRIMARY KEY,
+            exam_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            marks_obtained REAL DEFAULT 0,
+            grade TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+            FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+            UNIQUE(exam_id, student_id)
+        )
+    ''')
+    
+    # 20. Exam Results Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS exam_results (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            class TEXT NOT NULL,
+            section TEXT NOT NULL,
+            total_marks REAL DEFAULT 0,
+            obtained_marks REAL DEFAULT 0,
+            percentage REAL DEFAULT 0,
+            grade TEXT,
+            rank INTEGER,
+            result_data TEXT, -- JSON of all exam scores
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
+            UNIQUE(student_id, class, section)
+        )
+    ''')
+    
+    # 21. Grade System Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS grade_system (
+            id SERIAL PRIMARY KEY,
+            grade_name TEXT NOT NULL,
+            min_percentage REAL NOT NULL,
+            max_percentage REAL NOT NULL,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 22. Exam Templates Table (CBSE, MP Board, UP Board, Custom)
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS exam_templates (
+            id SERIAL PRIMARY KEY,
+            board_name TEXT NOT NULL,
+            template_data TEXT NOT NULL, -- JSON array
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+        # =====================================================================
+    # 📚 DEFAULT EXAM DATA
+    # =====================================================================
+    
+    # Default Board Settings
+    execute_query(cursor, "SELECT * FROM board_settings LIMIT 1")
+    if not cursor.fetchone():
+        execute_query(cursor, '''
+            INSERT INTO board_settings (board_name, exam_pattern) VALUES (?, ?)
+        ''', ('CBSE', '{"pt1":"Periodic Test 1","term1":"Term 1","pt2":"Periodic Test 2","term2":"Term 2"}'))
+    
+    # Default Grade System
+    execute_query(cursor, "SELECT * FROM grade_system LIMIT 1")
+    if not cursor.fetchone():
+        grade_data = [
+            ('A+', 90, 100, 'Outstanding'),
+            ('A', 80, 89, 'Excellent'),
+            ('B+', 70, 79, 'Very Good'),
+            ('B', 60, 69, 'Good'),
+            ('C', 50, 59, 'Average'),
+            ('D', 40, 49, 'Below Average'),
+            ('F', 0, 39, 'Fail')
+        ]
+        for g in grade_data:
+            execute_query(cursor, '''
+                INSERT INTO grade_system (grade_name, min_percentage, max_percentage, description)
+                VALUES (?, ?, ?, ?)
+            ''', g)
+    
+    # Default Exam Templates
+    execute_query(cursor, "SELECT * FROM exam_templates LIMIT 1")
+    if not cursor.fetchone():
+        templates = [
+            ('CBSE', '{"pt1":"Periodic Test 1","term1":"Term 1","pt2":"Periodic Test 2","term2":"Term 2"}'),
+            ('MP Board', '{"quarterly":"Quarterly Exam","half_yearly":"Half Yearly Exam","annual":"Annual Exam"}'),
+            ('UP Board', '{"quarterly":"Quarterly Exam","half_yearly":"Half Yearly Exam","pre_board":"Pre-Board Exam","annual":"Annual Exam"}'),
+            ('Custom', '{}')
+        ]
+        for t in templates:
+            execute_query(cursor, '''
+                INSERT INTO exam_templates (board_name, template_data) VALUES (?, ?)
+            ''', t)
+    
     conn.commit()
     
         # =====================================================================
