@@ -4157,6 +4157,51 @@ def delete_exam(exam_id):
     except Exception as e:
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
+    
+# =====================================================================
+# 👨‍🏫 STAFF - ASSIGNED EXAMS API
+# =====================================================================
+
+@app.route('/api/staff/exams/<int:staff_id>', methods=['GET'])
+def get_staff_exams(staff_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get staff's assigned class
+    execute_query(cursor, "SELECT assigned_class, assigned_section FROM staff WHERE id = ?", (staff_id,))
+    staff = cursor.fetchone()
+    
+    if not staff or not staff[0]:
+        conn.close()
+        return jsonify({"success": True, "exams": []})
+    
+    assigned_class = staff[0]
+    assigned_section = staff[1] or 'A'
+    
+    # Get exams for this class
+    execute_query(cursor, '''
+        SELECT id, exam_name, class, section, subject, max_marks, date 
+        FROM exams 
+        WHERE class = ? AND section = ?
+        ORDER BY date DESC
+    ''', (assigned_class, assigned_section))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    exams = []
+    for r in rows:
+        exams.append({
+            "id": r[0],
+            "exam_name": r[1],
+            "class": r[2],
+            "section": r[3],
+            "subject": r[4],
+            "max_marks": r[5],
+            "date": r[6]
+        })
+    
+    return jsonify({"success": True, "exams": exams})
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
