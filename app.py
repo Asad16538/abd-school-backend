@@ -4373,7 +4373,7 @@ def get_subjects_by_class(class_name):
 def add_subject_to_class():
     """Add a subject to a class - Supports both GET and POST"""
     
-    # 🔥 GET se bhi data le sakte hain
+    # GET se bhi data le sakte hain
     if request.method == 'GET':
         class_name = request.args.get('class_name')
         subject_name = request.args.get('subject_name')
@@ -4391,39 +4391,58 @@ def add_subject_to_class():
     cursor = conn.cursor()
     
     try:
-        # First, add to subjects_master if not exists
-        if DATABASE_URL:
-            execute_query(cursor, '''
-                INSERT INTO subjects_master (subject_name, max_marks) 
-                VALUES (%s, %s) 
-                ON CONFLICT (subject_name) DO NOTHING
-            ''', (subject_name, max_marks))
-        else:
-            execute_query(cursor, '''
-                INSERT OR IGNORE INTO subjects_master (subject_name, max_marks) 
-                VALUES (?, ?)
-            ''', (subject_name, max_marks))
-        
-        # Get subject id
+        # 🔥 FIX: Pehle check karo subject exists ya nahi
         if DATABASE_URL:
             execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = %s", (subject_name,))
         else:
             execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = ?", (subject_name,))
-        subject = cursor.fetchone()
         
-        if subject:
-            subject_id = subject[0]
+        existing = cursor.fetchone()
+        
+        if existing:
+            subject_id = existing[0]
+        else:
+            # Insert new subject
+            if DATABASE_URL:
+                execute_query(cursor, '''
+                    INSERT INTO subjects_master (subject_name, max_marks) 
+                    VALUES (%s, %s)
+                ''', (subject_name, max_marks))
+            else:
+                execute_query(cursor, '''
+                    INSERT INTO subjects_master (subject_name, max_marks) 
+                    VALUES (?, ?)
+                ''', (subject_name, max_marks))
             
+            # Get new subject id
+            if DATABASE_URL:
+                execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = %s", (subject_name,))
+            else:
+                execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = ?", (subject_name,))
+            subject_id = cursor.fetchone()[0]
+        
+        # 🔥 FIX: Class-subject mapping mein pehle check karo
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                SELECT id FROM class_subjects WHERE class_name = %s AND subject_id = %s
+            ''', (class_name, subject_id))
+        else:
+            execute_query(cursor, '''
+                SELECT id FROM class_subjects WHERE class_name = ? AND subject_id = ?
+            ''', (class_name, subject_id))
+        
+        existing_mapping = cursor.fetchone()
+        
+        if not existing_mapping:
             # Add to class_subjects
             if DATABASE_URL:
                 execute_query(cursor, '''
                     INSERT INTO class_subjects (class_name, subject_id, is_active) 
                     VALUES (%s, %s, 1)
-                    ON CONFLICT (class_name, subject_id) DO NOTHING
                 ''', (class_name, subject_id))
             else:
                 execute_query(cursor, '''
-                    INSERT OR IGNORE INTO class_subjects (class_name, subject_id, is_active) 
+                    INSERT INTO class_subjects (class_name, subject_id, is_active) 
                     VALUES (?, ?, 1)
                 ''', (class_name, subject_id))
         
