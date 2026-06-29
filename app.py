@@ -318,7 +318,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS board_settings (
             id SERIAL PRIMARY KEY,
             board_name TEXT NOT NULL DEFAULT 'CBSE',
-            exam_pattern TEXT NOT NULL, -- JSON array
+            exam_pattern TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -327,7 +327,7 @@ def init_db():
     execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS exams (
             id SERIAL PRIMARY KEY,
-            exam_id TEXT NOT NULL, -- pt1, term1, quarterly, half_yearly, annual
+            exam_id TEXT NOT NULL,
             exam_name TEXT NOT NULL,
             class TEXT NOT NULL,
             section TEXT NOT NULL,
@@ -348,6 +348,8 @@ def init_db():
             exam_id INTEGER NOT NULL,
             student_id INTEGER NOT NULL,
             marks_obtained REAL DEFAULT 0,
+            theory_marks REAL DEFAULT 0,
+            internal_marks REAL DEFAULT 0,
             grade TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(exam_id) REFERENCES exams(id) ON DELETE CASCADE,
@@ -368,7 +370,7 @@ def init_db():
             percentage REAL DEFAULT 0,
             grade TEXT,
             rank INTEGER,
-            result_data TEXT, -- JSON of all exam scores
+            result_data TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE,
             UNIQUE(student_id, class, section)
@@ -387,18 +389,33 @@ def init_db():
         )
     ''')
     
-    # 22. Exam Templates Table (CBSE, MP Board, UP Board, Custom)
+    # 22. Exam Templates Table
     execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS exam_templates (
             id SERIAL PRIMARY KEY,
             board_name TEXT NOT NULL,
-            template_data TEXT NOT NULL, -- JSON array
+            template_data TEXT NOT NULL,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-        # =====================================================================
+    # 23. Exam Patterns Table
+    execute_query(cursor, '''
+        CREATE TABLE IF NOT EXISTS exam_patterns (
+            id SERIAL PRIMARY KEY,
+            board_name TEXT NOT NULL,
+            class_name TEXT NOT NULL,
+            subject_type TEXT NOT NULL,
+            theory_marks INTEGER NOT NULL,
+            internal_marks INTEGER NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(board_name, class_name, subject_type)
+        )
+    ''')
+    
+    # =====================================================================
     # 📚 DEFAULT EXAM DATA
     # =====================================================================
     
@@ -440,6 +457,32 @@ def init_db():
             execute_query(cursor, '''
                 INSERT INTO exam_templates (board_name, template_data) VALUES (?, ?)
             ''', t)
+    
+    # Default Exam Patterns
+    execute_query(cursor, "SELECT * FROM exam_patterns LIMIT 1")
+    if not cursor.fetchone():
+        # CBSE
+        execute_query(cursor, '''
+            INSERT INTO exam_patterns (board_name, class_name, subject_type, theory_marks, internal_marks) VALUES
+            ('CBSE', 'All', 'All', 80, 20)
+        ''')
+        
+        # MP Board
+        execute_query(cursor, '''
+            INSERT INTO exam_patterns (board_name, class_name, subject_type, theory_marks, internal_marks) VALUES
+            ('MP Board', '10', 'Languages', 75, 25),
+            ('MP Board', '10', 'Mathematics', 75, 25),
+            ('MP Board', '10', 'Social Science', 75, 25),
+            ('MP Board', '10', 'Science', 75, 25),
+            ('MP Board', '12', 'Non-Practical', 80, 20),
+            ('MP Board', '12', 'Practical', 70, 30)
+        ''')
+        
+        # UP Board
+        execute_query(cursor, '''
+            INSERT INTO exam_patterns (board_name, class_name, subject_type, theory_marks, internal_marks) VALUES
+            ('UP Board', 'All', 'All', 100, 0)
+        ''')
     
     conn.commit()
     
@@ -4202,6 +4245,57 @@ def get_staff_exams(staff_id):
         })
     
     return jsonify({"success": True, "exams": exams})
+
+# =====================================================================
+# 📊 GET EXAM PATTERN API
+# =====================================================================
+
+@app.route('/api/exam-pattern', methods=['GET'])
+def get_exam_pattern():
+    board = request.args.get('board', 'CBSE')
+    class_name = request.args.get('class', 'All')
+    subject_type = request.args.get('subject_type', 'All')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # First try to get specific pattern
+    execute_query(cursor, '''
+        SELECT theory_marks, internal_marks FROM exam_patterns 
+        WHERE board_name = ? AND class_name = ? AND subject_type = ?
+    ''', (board, class_name, subject_type))
+    
+    row = cursor.fetchone()
+    
+    # If not found, try generic pattern
+    if not row:
+        execute_query(cursor, '''
+            SELECT theory_marks, internal_marks FROM exam_patterns 
+            WHERE board_name = ? AND class_name = 'All' AND subject_type = 'All'
+        ''', (board,))
+        row = cursor.fetchone()
+    
+    conn.close()
+    
+    if row:
+        return jsonify({
+            "success": True,
+            "board": board,
+            "class": class_name,
+            "theory_marks": row[0],
+            "internal_marks": row[1],
+            "total_marks": row[0] + row[1]
+        })
+    
+    # Default fallback
+    return jsonify({
+        "success": True,
+        "board": board,
+        "class": class_name,
+        "theory_marks": 80,
+        "internal_marks": 20,
+        "total_marks": 100
+    })
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
