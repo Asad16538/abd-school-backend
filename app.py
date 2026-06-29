@@ -341,7 +341,7 @@ def init_db():
         )
     ''')
     
-    # 19. Exam Marks Table
+    # 19. Exam Marks Table (Updated with attendance)
     execute_query(cursor, '''
         CREATE TABLE IF NOT EXISTS exam_marks (
             id SERIAL PRIMARY KEY,
@@ -350,6 +350,7 @@ def init_db():
             marks_obtained REAL DEFAULT 0,
             theory_marks REAL DEFAULT 0,
             internal_marks REAL DEFAULT 0,
+            attendance_marks REAL DEFAULT 0,
             grade TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(exam_id) REFERENCES exams(id) ON DELETE CASCADE,
