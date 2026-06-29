@@ -4298,6 +4298,162 @@ def get_exam_pattern():
         "total_marks": 100
     })
 
+# =====================================================================
+# 📚 SUBJECTS MANAGEMENT API (YAHAN ADD KARO)
+# =====================================================================
+
+@app.route('/api/subjects/class/<class_name>', methods=['GET'])
+def get_subjects_by_class(class_name):
+    """Get all subjects assigned to a specific class"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Ensure class_subjects and subjects_master tables exist
+        execute_query(cursor, '''
+            CREATE TABLE IF NOT EXISTS subjects_master (
+                id SERIAL PRIMARY KEY,
+                subject_name TEXT NOT NULL,
+                subject_code TEXT,
+                max_marks INTEGER DEFAULT 100,
+                is_compulsory INTEGER DEFAULT 1
+            )
+        ''')
+        
+        execute_query(cursor, '''
+            CREATE TABLE IF NOT EXISTS class_subjects (
+                id SERIAL PRIMARY KEY,
+                class_name TEXT NOT NULL,
+                subject_id INTEGER NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                display_order INTEGER DEFAULT 0,
+                FOREIGN KEY(subject_id) REFERENCES subjects_master(id)
+            )
+        ''')
+        conn.commit()
+        
+        # Get subjects for this class
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                SELECT sm.id, sm.subject_name, sm.max_marks, sm.subject_code, cs.display_order
+                FROM subjects_master sm
+                JOIN class_subjects cs ON sm.id = cs.subject_id
+                WHERE cs.class_name = %s AND cs.is_active = 1
+                ORDER BY cs.display_order ASC
+            ''', (class_name,))
+        else:
+            execute_query(cursor, '''
+                SELECT sm.id, sm.subject_name, sm.max_marks, sm.subject_code, cs.display_order
+                FROM subjects_master sm
+                JOIN class_subjects cs ON sm.id = cs.subject_id
+                WHERE cs.class_name = ? AND cs.is_active = 1
+                ORDER BY cs.display_order ASC
+            ''', (class_name,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        subjects = []
+        for r in rows:
+            subjects.append({
+                "id": r[0],
+                "subject_name": r[1],
+                "max_marks": r[2] or 100,
+                "subject_code": r[3] or "",
+                "display_order": r[4] or 0
+            })
+        
+        return jsonify({"success": True, "subjects": subjects})
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        print(f"❌ Subjects fetch error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/subjects/add-to-class', methods=['POST'])
+def add_subject_to_class():
+    """Add a subject to a class"""
+    data = request.json
+    class_name = data.get('class_name')
+    subject_name = data.get('subject_name')
+    max_marks = data.get('max_marks', 100)
+    
+    if not class_name or not subject_name:
+        return jsonify({"success": False, "error": "Class and Subject required"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # First, add to subjects_master if not exists
+        if DATABASE_URL:
+            execute_query(cursor, '''
+                INSERT INTO subjects_master (subject_name, max_marks) 
+                VALUES (%s, %s) 
+                ON CONFLICT (subject_name) DO NOTHING
+            ''', (subject_name, max_marks))
+        else:
+            execute_query(cursor, '''
+                INSERT OR IGNORE INTO subjects_master (subject_name, max_marks) 
+                VALUES (?, ?)
+            ''', (subject_name, max_marks))
+        
+        # Get subject id
+        execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = ?", (subject_name,))
+        subject = cursor.fetchone()
+        
+        if subject:
+            subject_id = subject[0]
+            
+            # Add to class_subjects
+            if DATABASE_URL:
+                execute_query(cursor, '''
+                    INSERT INTO class_subjects (class_name, subject_id, is_active) 
+                    VALUES (%s, %s, 1)
+                    ON CONFLICT (class_name, subject_id) DO NOTHING
+                ''', (class_name, subject_id))
+            else:
+                execute_query(cursor, '''
+                    INSERT OR IGNORE INTO class_subjects (class_name, subject_id, is_active) 
+                    VALUES (?, ?, 1)
+                ''', (class_name, subject_id))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Subject '{subject_name}' added to {class_name}"})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/subjects/remove-from-class', methods=['POST'])
+def remove_subject_from_class():
+    """Remove a subject from a class"""
+    data = request.json
+    class_name = data.get('class_name')
+    subject_id = data.get('subject_id')
+    
+    if not class_name or not subject_id:
+        return jsonify({"success": False, "error": "Class and Subject ID required"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        execute_query(cursor, '''
+            DELETE FROM class_subjects WHERE class_name = ? AND subject_id = ?
+        ''', (class_name, subject_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Subject removed from class"})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
     # Render automatically PORT variable provide karta hai
