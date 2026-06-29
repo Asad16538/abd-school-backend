@@ -4369,13 +4369,20 @@ def get_subjects_by_class(class_name):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/subjects/add-to-class', methods=['POST'])
+@app.route('/api/subjects/add-to-class', methods=['GET', 'POST'])
 def add_subject_to_class():
-    """Add a subject to a class"""
-    data = request.json
-    class_name = data.get('class_name')
-    subject_name = data.get('subject_name')
-    max_marks = data.get('max_marks', 100)
+    """Add a subject to a class - Supports both GET and POST"""
+    
+    # 🔥 GET se bhi data le sakte hain
+    if request.method == 'GET':
+        class_name = request.args.get('class_name')
+        subject_name = request.args.get('subject_name')
+        max_marks = request.args.get('max_marks', 100)
+    else:
+        data = request.json or {}
+        class_name = data.get('class_name')
+        subject_name = data.get('subject_name')
+        max_marks = data.get('max_marks', 100)
     
     if not class_name or not subject_name:
         return jsonify({"success": False, "error": "Class and Subject required"}), 400
@@ -4398,7 +4405,10 @@ def add_subject_to_class():
             ''', (subject_name, max_marks))
         
         # Get subject id
-        execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = ?", (subject_name,))
+        if DATABASE_URL:
+            execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = %s", (subject_name,))
+        else:
+            execute_query(cursor, "SELECT id FROM subjects_master WHERE subject_name = ?", (subject_name,))
         subject = cursor.fetchone()
         
         if subject:
