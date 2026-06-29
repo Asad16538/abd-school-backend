@@ -4066,41 +4066,38 @@ def save_exam_marks():
     cursor = conn.cursor()
     
     try:
-        # Get exam details
-        execute_query(cursor, "SELECT max_marks, class, section FROM exams WHERE id = ?", (exam_id,))
-        exam = cursor.fetchone()
-        
-        if not exam:
-            conn.close()
-            return jsonify({"success": False, "error": "Exam not found"}), 404
-        
-        max_marks = exam[0]
-        
         for m in marks_list:
             student_id = m.get('student_id')
-            marks_obtained = float(m.get('marks_obtained', 0))
+            attendance = m.get('attendance', 0)
             
-            # Calculate grade
-            percentage = (marks_obtained / max_marks) * 100 if max_marks > 0 else 0
-            grade = get_grade_from_percentage(percentage)
-            
-            # Insert or update
+            # Update attendance in students table
             execute_query(cursor, '''
-                INSERT INTO exam_marks (exam_id, student_id, marks_obtained, grade)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(exam_id, student_id) 
-                DO UPDATE SET marks_obtained = ?, grade = ?
-            ''', (exam_id, student_id, marks_obtained, grade, marks_obtained, grade))
+                UPDATE students SET attendance_days = ? WHERE id = ?
+            ''', (attendance, student_id))
+            
+            # Save subject marks
+            subject_marks = m.get('subject_marks', {})
+            for subject_id, marks in subject_marks.items():
+                theory = marks.get('theory', 0)
+                practical = marks.get('practical', 0)
+                internal = marks.get('internal', 0)
+                total = theory + practical + internal
+                
+                execute_query(cursor, '''
+                    INSERT INTO exam_marks (exam_id, student_id, subject_id, theory_marks, practical_marks, internal_marks, marks_obtained)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(exam_id, student_id, subject_id) 
+                    DO UPDATE SET theory_marks = ?, practical_marks = ?, internal_marks = ?, marks_obtained = ?
+                ''', (exam_id, student_id, subject_id, theory, practical, internal, total,
+                      theory, practical, internal, total))
         
         conn.commit()
         conn.close()
-        
         return jsonify({"success": True, "message": "Marks saved successfully"})
         
     except Exception as e:
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
-
 
 def get_grade_from_percentage(percentage):
     """Helper function to get grade from percentage"""
