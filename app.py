@@ -4479,6 +4479,24 @@ def remove_subject_from_class():
     except Exception as e:
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
+    
+# 1. Secret Key Storage (Simple Method)
+VALID_LICENCES = ["AB-DIGITAL-12345", "AB-DIGITAL-67890"] # Yahan aap keys add karte rahein
+
+@app.route('/api/verify-licence', methods=['POST'])
+def verify_licence():
+    key = request.json.get('key')
+    if key in VALID_LICENCES:
+        return jsonify({"success": True})
+    return jsonify({"success": False}), 403
+
+# 2. Key Generator (Sirf aapke liye)
+@app.route('/api/generate-key-secret-admin', methods=['POST'])
+def generate_key():
+    # Yahan simple check lagayein ki request aapki hi machine se aa rahi hai
+    new_key = "AB-" + str(uuid.uuid4())[:8].upper()
+    VALID_LICENCES.append(new_key)
+    return jsonify({"key": new_key})
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
