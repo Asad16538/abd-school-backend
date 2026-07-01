@@ -585,31 +585,31 @@ def init_db():
             VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
         ''')
         
-# =====================================================================
-# 🚀 DATABASE INDEXES - SUPER FAST QUERIES
-# =====================================================================
-
-try:
-    # Staff attendance indexes
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_date ON staff_attendance(date)")
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_staff_id ON staff_attendance(staff_id)")
+    # =====================================================================
+    # 🚀 DATABASE INDEXES - YAHAN PASTE KARO (FUNCTION KE ANDAR)
+    # =====================================================================
+    try:
+        # Staff attendance indexes
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_date ON staff_attendance(date)")
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_staff_id ON staff_attendance(staff_id)")
+        
+        # Students indexes
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_class ON students(class, section)")
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_status ON students(status)")
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_parent_mobile ON students(parent_mobile)")
+        
+        # Fee transactions indexes
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_date ON fee_transactions(date)")
+        execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_student ON fee_transactions(student_id)")
+        
+        print("✅ Database indexes created successfully!")
+    except Exception as idx_err:
+        print(f"⚠️ Index creation warning: {idx_err}")
     
-    # Students indexes
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_class ON students(class, section)")
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_status ON students(status)")
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_parent_mobile ON students(parent_mobile)")
-    
-    # Fee transactions indexes
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_date ON fee_transactions(date)")
-    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_student ON fee_transactions(student_id)")
-    
-    print("✅ Database indexes created successfully!")
-except Exception as idx_err:
-    print(f"⚠️ Index creation warning: {idx_err}")
-    
-conn.commit()
-conn.close()
-print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
+    # ✅ YAHAN COMMIT AUR CLOSE HONA CHAHIYE
+    conn.commit()
+    conn.close()
+    print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
 
 
 def init_expense_table():
