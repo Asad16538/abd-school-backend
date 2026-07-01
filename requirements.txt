@@ -8,3 +8,4 @@ pydantic
 psycopg2-binary
 pandas          # ✅ YEH ADD KARO
 openpyxl        # ✅ YEH ADD KARO
+pytz==2024.1
