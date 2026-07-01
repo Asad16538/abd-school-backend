@@ -490,7 +490,7 @@ def init_db():
     
     conn.commit()
     
-        # =====================================================================
+    # =====================================================================
     # 🔥 FORCE ADD MISSING COLUMNS (For existing databases)
     # =====================================================================
     
@@ -571,6 +571,28 @@ def init_db():
             INSERT INTO attendance_rules (id, school_latitude, school_longitude, allowed_radius_meters, shift_start_time, late_buffer_minutes, shift_end_time)
             VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
         ''')
+        
+    # =====================================================================
+# 🚀 DATABASE INDEXES - SUPER FAST QUERIES
+# =====================================================================
+
+try:
+    # Staff attendance indexes
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_date ON staff_attendance(date)")
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_staff_attendance_staff_id ON staff_attendance(staff_id)")
+    
+    # Students indexes
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_class ON students(class, section)")
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_status ON students(status)")
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_students_parent_mobile ON students(parent_mobile)")
+    
+    # Fee transactions indexes
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_date ON fee_transactions(date)")
+    execute_query(cursor, "CREATE INDEX IF NOT EXISTS idx_fee_transactions_student ON fee_transactions(student_id)")
+    
+    print("✅ Database indexes created successfully!")
+except Exception as idx_err:
+    print(f"⚠️ Index creation warning: {idx_err}")
     
     conn.commit()
     conn.close()
