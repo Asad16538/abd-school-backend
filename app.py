@@ -15,9 +15,22 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from pydantic import BaseModel
+import pytz
 from datetime import datetime
 from flask import Flask
 import os
+
+# 🕐 IST TIME ZONE FUNCTION
+def get_ist_time():
+    """Returns current IST time (UTC+5:30)"""
+    try:
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        return datetime.now(ist)
+    except:
+        # Fallback - agar pytz install nahi hai toh UTC+5:30 manually add karo
+        from datetime import timedelta
+        return datetime.utcnow() + timedelta(hours=5, minutes=30)
 
 PORT = int(os.environ.get('PORT', 10000))
 
@@ -3526,9 +3539,11 @@ def staff_checkout():
     data = request.json
     staff_id = data.get('staff_id')
     
-    now = datetime.now()
+    # 🕐 IST TIME USE KARO
+    now = get_ist_time()
     today_str = now.strftime("%d/%m/%Y")
     current_time_str = now.strftime("%H:%M:%S")
+    current_hour = now.hour
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -4504,6 +4519,27 @@ def remove_subject_from_class():
     except Exception as e:
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
+    
+@app.route('/api/staff/link-telegram', methods=['POST'])
+def staff_link_telegram():
+    """Staff apna mobile number daal kar Telegram ID link karega"""
+    data = request.json
+    mobile = str(data.get('mobile')).strip()
+    telegram_id = str(data.get('telegram_id')).strip()
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Mobile number se staff dhoondo
+    execute_query(cursor, "UPDATE staff SET telegram_id = ? WHERE mobile = ? AND status = 'Active'", (telegram_id, mobile))
+    
+    if cursor.rowcount > 0:
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "🎉 Aapka Telegram account link ho gaya hai!"})
+    else:
+        conn.close()
+        return jsonify({"success": False, "error": "❌ Mobile number hamare record mein nahi mila!"})
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
