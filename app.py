@@ -585,7 +585,7 @@ def init_db():
             VALUES (1, 24.7432, 78.8561, 50.0, '08:00', 15, '14:00')
         ''')
         
-    # =====================================================================
+# =====================================================================
 # 🚀 DATABASE INDEXES - SUPER FAST QUERIES
 # =====================================================================
 
@@ -607,9 +607,9 @@ try:
 except Exception as idx_err:
     print(f"⚠️ Index creation warning: {idx_err}")
     
-    conn.commit()
-    conn.close()
-    print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
+conn.commit()
+conn.close()
+print("🚀 Advanced School ERP Database Loaded & Upgraded Successfully!")
 
 
 def init_expense_table():
