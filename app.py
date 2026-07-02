@@ -1465,8 +1465,10 @@ def delete_student(student_id):
             
         student_name = student[0]
         
-        # 2. Student ko delete karne ki query execute karte hain
-        # Note: attendance_records table me CASCADE laga hua hai, toh uske saare records bhi safely drop ho jayenge
+        # ✅ 2. PEHLE parent_accounts delete karo (FOREIGN KEY CONSTRAINT)
+        execute_query(cursor, "DELETE FROM parent_accounts WHERE student_id = ?", (student_id,))
+        
+        # ✅ 3. AB student delete karo
         execute_query(cursor, "DELETE FROM students WHERE id = ?", (student_id,))
         
         conn.commit()
@@ -3026,7 +3028,7 @@ def parent_login():
     cursor = conn.cursor()
     
     try:
-        # Ensure parent_accounts table exists
+        # Parent Accounts Table with CASCADE
         execute_query(cursor, '''
             CREATE TABLE IF NOT EXISTS parent_accounts (
                 id SERIAL PRIMARY KEY,
@@ -3036,7 +3038,7 @@ def parent_login():
                 password TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(student_id) REFERENCES students(id)
+                FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE
             )
         ''')
         conn.commit()
