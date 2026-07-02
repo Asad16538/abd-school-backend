@@ -1678,12 +1678,22 @@ def mark_staff_attendance():
     staff_id = data.get('staff_id')
     device_token = data.get('device_token', '').strip()
     
+    # 🛡️ FAKE GPS - Accuracy check
     try:
         user_lat = float(data.get('latitude', 0))
         user_lng = float(data.get('longitude', 0))
+        gps_accuracy = data.get('accuracy', 999)  # Frontend se accuracy aayegi
     except (ValueError, TypeError):
         user_lat = 0.0
         user_lng = 0.0
+        gps_accuracy = 999
+    
+    # 🛡️ FAKE GPS DETECTION - Accuracy check
+    if gps_accuracy < 5 and gps_accuracy != 999:
+        return jsonify({
+            "success": False,
+            "error": "🚨 Fake GPS Detected! (Accuracy too perfect)"
+        }), 403
     
     if user_lat == 0.0 or user_lng == 0.0:
         return jsonify({
@@ -1753,8 +1763,9 @@ def mark_staff_attendance():
             "success": False, 
             "error": f"❌ Scope Bound Error: Aap campus range se {round(distance - allowed_radius)} meters door hain!"
         }), 403
-        
-    now = datetime.now()
+    
+    # 🕐 IST TIME USE KARO
+    now = get_ist_time()  # ✅ IST TIME - function upar define hai
     today_str = now.strftime("%d/%m/%Y")
     current_time_str = now.strftime("%H:%M:%S")
     current_hour = now.hour
