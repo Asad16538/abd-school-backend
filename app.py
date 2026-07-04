@@ -4553,6 +4553,39 @@ def staff_link_telegram():
     else:
         conn.close()
         return jsonify({"success": False, "error": "❌ Mobile number hamare record mein nahi mila!"})
+    
+@app.route('/api/staff/<int:staff_id>', methods=['PUT'])
+def update_staff(staff_id):
+    try:
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # ✅ PostgreSQL/SQLite compatible
+        if DATABASE_URL:
+            execute_query(cursor, """
+                UPDATE staff 
+                SET name = %s, designation = %s, mobile = %s, 
+                    base_salary = %s, pf_enabled = %s 
+                WHERE id = %s
+            """, (data['name'], data['designation'], data['mobile'], 
+                  data['base_salary'], data['epf_enabled'], staff_id))
+        else:
+            execute_query(cursor, """
+                UPDATE staff 
+                SET name = ?, designation = ?, mobile = ?, 
+                    base_salary = ?, pf_enabled = ? 
+                WHERE id = ?
+            """, (data['name'], data['designation'], data['mobile'], 
+                  data['base_salary'], data['epf_enabled'], staff_id))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Staff updated successfully"})
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # 2. AUR SABSE NICHE (File ka end yahan hona chahiye)
 if __name__ == '__main__':
