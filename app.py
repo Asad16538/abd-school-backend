@@ -1682,13 +1682,12 @@ def mark_staff_attendance():
     try:
         user_lat = float(data.get('latitude', 0))
         user_lng = float(data.get('longitude', 0))
-        gps_accuracy = data.get('accuracy', 999)  # Frontend se accuracy aayegi
+        gps_accuracy = data.get('accuracy', 999)
     except (ValueError, TypeError):
         user_lat = 0.0
         user_lng = 0.0
         gps_accuracy = 999
     
-    # 🛡️ FAKE GPS DETECTION - Accuracy check
     if gps_accuracy < 5 and gps_accuracy != 999:
         return jsonify({
             "success": False,
@@ -1764,15 +1763,13 @@ def mark_staff_attendance():
             "error": f"❌ Scope Bound Error: Aap campus range se {round(distance - allowed_radius)} meters door hain!"
         }), 403
     
-    # 🕐 IST TIME USE KARO
-    now = get_ist_time()  # ✅ IST TIME - function upar define hai
+    now = get_ist_time()
     today_str = now.strftime("%d/%m/%Y")
     current_time_str = now.strftime("%H:%M:%S")
     current_hour = now.hour
     
     greeting = "Good Morning" if current_hour < 12 else "Good Afternoon"
     
-    # ✅ FIXED - CURSOR ADDED
     execute_query(cursor, "SELECT name, mobile, device_token FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
     staff_row = cursor.fetchone()
     if not staff_row:
@@ -1781,7 +1778,6 @@ def mark_staff_attendance():
     staff_name, mobile, registered_device = staff_row
     
     if device_token:
-        # ✅ FIXED - CURSOR ADDED
         execute_query(cursor, "SELECT name FROM staff WHERE device_token = ? AND id != ? AND status = 'Active'", (device_token, staff_id))
         existing_owner = cursor.fetchone()
         
@@ -1792,7 +1788,6 @@ def mark_staff_attendance():
                 "error": f"❌ Proxy Blocked! Yeh mobile pehle se Mr./Ms. {existing_owner[0]} ke naam par locked hai. Ek mobile se doosra staff punch nahi kar sakta!"
             }), 403
 
-        # ✅ FIXED - CURSOR ADDED
         if not registered_device:
             execute_query(cursor, "UPDATE staff SET device_token = ? WHERE id = ?", (device_token, staff_id))
             conn.commit()
@@ -1804,13 +1799,17 @@ def mark_staff_attendance():
                 "error": "❌ Access Denied: Proxy Blocked! Aap kisi doosre staff ke mobile se apni attendance nahi laga sakte hain."
             }), 403
     
-    # ✅ FIXED - CURSOR ADDED
     execute_query(cursor, "SELECT id, check_in_time, check_out_time FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, today_str))
     attendance_record = cursor.fetchone()
     
     formatted_mobile = str(mobile).strip() if mobile else ""
     if formatted_mobile and not formatted_mobile.startswith('91') and len(formatted_mobile) == 10:
         formatted_mobile = f"91{formatted_mobile}"
+
+    # ✅ STAFF TELEGRAM ID FETCH (COMMON - Both Entry & Exit)
+    execute_query(cursor, "SELECT telegram_id FROM staff WHERE id = ?", (staff_id,))
+    staff_telegram_row = cursor.fetchone()
+    staff_telegram_id = staff_telegram_row[0] if staff_telegram_row and staff_telegram_row[0] else None
 
     if not attendance_record:
         late_fine = 0.0
@@ -1834,8 +1833,9 @@ def mark_staff_attendance():
         conn.commit()
         conn.close()
         
+        # ✅ ADMIN MESSAGE
         whatsapp_msg = (
-            f"✨ *{greeting} Mr. {staff_name}*,\n\n"
+            f"✨ *{greeting} Dear. {staff_name}*,\n\n"
             f"Your *CAMPUS ENTRY* attendance has been marked successfully. ✅\n\n"
             f"⏱️ *Entry Time:* {current_time_str}\n"
             f"📊 *Status:* {status}\n"
@@ -1853,6 +1853,20 @@ def mark_staff_attendance():
             send_telegram_msg(whatsapp_msg)
         except Exception as e:
             print(f"⚠️ Telegram alert error: {e}")
+        
+        # ✅ STAFF MESSAGE (Entry)
+        if staff_telegram_id:
+            staff_msg = (
+                f"✅ *Campus Entry Complete!*\n\n"
+                f"👤 *Teacher:* {staff_name}\n"
+                f"⏱️ *Entry Time:* {current_time_str}\n"
+                f"📊 *Status:* {status}\n\n"
+                f"_Thank you!_ 🙏"
+            )
+            try:
+                send_telegram_msg_to_chat(staff_telegram_id, staff_msg)
+            except Exception as e:
+                print(f"⚠️ Staff Telegram error: {e}")
             
         return jsonify({"success": True, "message": f"Campus Entry Complete! Status: {status}"})
 
@@ -1879,8 +1893,10 @@ def mark_staff_attendance():
         conn.close()
         
         evening_greeting = "Good Evening" if now.hour >= 16 else "Good Afternoon"
+        
+        # ✅ ADMIN MESSAGE (Exit)
         whatsapp_msg = (
-            f"✨ *{evening_greeting} Mr. {staff_name}*,\n\n"
+            f"✨ *{evening_greeting} Dear. {staff_name}*,\n\n"
             f"Your *CAMPUS EXIT* attendance has been logged successfully. 🚗\n\n"
             f"⏱️ *Exit Time:* {current_time_str}{half_day_text}\n\n"
             f"Thank you for your valuable services today! Have a safe journey home. 🙏\n"
@@ -1890,6 +1906,19 @@ def mark_staff_attendance():
             send_telegram_msg(whatsapp_msg)
         except Exception as e:
             print(f"⚠️ Telegram Error: {e}")
+        
+        # ✅ STAFF MESSAGE (Exit)
+        if staff_telegram_id:
+            staff_msg = (
+                f"🚗 *Campus Exit Complete!*\n\n"
+                f"👤 *Teacher:* {staff_name}\n"
+                f"⏱️ *Exit Time:* {current_time_str}{half_day_text}\n\n"
+                f"_Safe Journey Home!_ 🙏"
+            )
+            try:
+                send_telegram_msg_to_chat(staff_telegram_id, staff_msg)
+            except Exception as e:
+                print(f"⚠️ Staff Telegram error: {e}")
         
         return jsonify({"success": True, "message": "Campus Exit Complete!"})
     
@@ -1996,19 +2025,21 @@ def mark_qr_attendance():
 # 🗓️ 1. TODAY'S ATTENDANCE DIRECTORY ROUTE
 @app.route('/api/payroll/today-report', methods=['GET'])
 def get_today_payroll_report():
-    # Sahi tarika:
-    today_str = datetime.now().strftime("%Y-%m-%d")
     conn = get_db_connection()
     cursor = conn.cursor()
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    
+    # ✅ BOTH DATE FORMATS CHECK KARO
+    today_iso = datetime.date.today().strftime("%Y-%m-%d")
+    today_dmy = datetime.date.today().strftime("%d/%m/%Y")
     
     execute_query(cursor, '''
         SELECT s.name, s.designation, sa.date, sa.check_in_time, sa.check_out_time, 
                sa.late_fine, sa.is_half_day, sa.leave_type, s.pf_enabled
         FROM staff_attendance sa
         JOIN staff s ON sa.staff_id = s.id
-        WHERE sa.date = ?
-    ''', (today_str,))
+        WHERE sa.date = ? OR sa.date = ?
+    ''', (today_iso, today_dmy))
+    
     rows = cursor.fetchall()
     conn.close()
     
@@ -4535,24 +4566,47 @@ def remove_subject_from_class():
     
 @app.route('/api/staff/link-telegram', methods=['POST'])
 def staff_link_telegram():
-    """Staff apna mobile number daal kar Telegram ID link karega"""
     data = request.json
     mobile = str(data.get('mobile')).strip()
     telegram_id = str(data.get('telegram_id')).strip()
     
+    if not mobile or not telegram_id:
+        return jsonify({"success": False, "error": "Mobile aur Telegram ID dono zaroori hain!"}), 400
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Mobile number se staff dhoondo
-    execute_query(cursor, "UPDATE staff SET telegram_id = ? WHERE mobile = ? AND status = 'Active'", (telegram_id, mobile))
+    # Check if staff exists
+    execute_query(cursor, "SELECT id, name FROM staff WHERE mobile = ? AND status = 'Active'", (mobile,))
+    staff = cursor.fetchone()
     
-    if cursor.rowcount > 0:
-        conn.commit()
+    if not staff:
         conn.close()
-        return jsonify({"success": True, "message": "🎉 Aapka Telegram account link ho gaya hai!"})
-    else:
+        return jsonify({"success": False, "error": "❌ Mobile number hamare record mein nahi mila!"}), 404
+    
+    staff_id, staff_name = staff
+    
+    # ✅ Check if Telegram ID already linked to another staff
+    execute_query(cursor, "SELECT id, name FROM staff WHERE telegram_id = ? AND id != ?", (telegram_id, staff_id))
+    existing = cursor.fetchone()
+    if existing:
         conn.close()
-        return jsonify({"success": False, "error": "❌ Mobile number hamare record mein nahi mila!"})
+        return jsonify({"success": False, "error": f"❌ Yeh Telegram ID already {existing[1]} ke saath link hai!"}), 400
+    
+    # ✅ Update staff with telegram_id
+    execute_query(cursor, "UPDATE staff SET telegram_id = ? WHERE id = ?", (telegram_id, staff_id))
+    conn.commit()
+    
+    # ✅ Send confirmation to staff's Telegram
+    confirmation_msg = f"✅ *Aapka Telegram account successfully link ho gaya hai!*\n\n👤 *Staff:* {staff_name}\n📱 *Mobile:* {mobile}\n\n_Ab aapko attendance ki notification directly is chat par milegi._"
+    
+    try:
+        send_telegram_msg_to_chat(telegram_id, confirmation_msg)
+    except:
+        pass  # Agar message fail ho to bhi chalega
+    
+    conn.close()
+    return jsonify({"success": True, "message": "🎉 Aapka Telegram account link ho gaya hai! Confirmation message bhej diya gaya hai."})
     
 @app.route('/api/staff/<int:staff_id>', methods=['PUT'])
 def update_staff(staff_id):
