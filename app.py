@@ -2757,7 +2757,12 @@ def fetch_class_timetable_relational():
 @app.route('/api/timetable/save-slot', methods=['POST'])
 def save_timetable_slot_relational():
     data = request.json or {}
-    class_id = data.get('class_id')
+    
+    # 🔥 DEBUG LOGS
+    print("🔥🔥🔥 TIMETABLE SAVE REQUEST 🔥🔥🔥")
+    print(f"📥 Received data: {data}")
+    
+    class_id_raw = data.get('class_id')
     section = data.get('section', 'A')
     day = data.get('day')
     period = int(data.get('period', 1))
@@ -2766,6 +2771,19 @@ def save_timetable_slot_relational():
     subject_id = data.get('subject_id')
     teacher_id = data.get('teacher_id')
     
+    # ✅ FIX: class_id ko integer mein convert karo
+    try:
+        # Agar class_id string hai toh integer mein convert karo
+        if isinstance(class_id_raw, str) and class_id_raw.isdigit():
+            class_id = int(class_id_raw)
+        else:
+            class_id = class_id_raw
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid class_id format!"}), 400
+    
+    # 🔥 DEBUG
+    print(f"📥 class_id: {class_id} (type: {type(class_id)})")
+    
     if not class_id or not day or not period:
         return jsonify({"success": False, "error": "Required fields missing hain!"}), 400
         
@@ -2773,7 +2791,26 @@ def save_timetable_slot_relational():
     cursor = conn.cursor()
     
     try:
-        # 🛡️ ANTI-CLASH INTERCEPTOR: Ek hi time par teacher doosri class me na fas jaye
+        # ✅ FIX: Agar class_id string hai toh classes table se ID fetch karo
+        if isinstance(class_id, str):
+            execute_query(cursor, "SELECT id FROM classes WHERE class_name = ?", (class_id,))
+            class_row = cursor.fetchone()
+            if class_row:
+                class_id = class_row[0]
+                print(f"✅ Converted class_name '{class_id_raw}' to ID: {class_id}")
+            else:
+                conn.close()
+                return jsonify({"success": False, "error": f"Class '{class_id_raw}' not found!"}), 400
+        
+        # ✅ Agar teacher_id string hai toh integer mein convert karo
+        if teacher_id:
+            try:
+                teacher_id = int(teacher_id)
+            except (ValueError, TypeError):
+                conn.close()
+                return jsonify({"success": False, "error": "Invalid teacher_id format!"}), 400
+        
+        # 🛡️ ANTI-CLASH INTERCEPTOR
         if teacher_id:
             execute_query(cursor, '''
                 SELECT c.class_name, t.section_name FROM timetables t
@@ -2784,11 +2821,11 @@ def save_timetable_slot_relational():
             if clash:
                 conn.close()
                 return jsonify({
-                    "success": False, 
+                    "success": False,
                     "error": f"❌ Teacher Clash! Yeh teacher pehle se {clash[0]} - {clash[1]} ke isi period me busy hain!"
                 }), 400
 
-        # Upsert logic (Pehle se slot bana hai to update, nahi to fresh register)
+        # Upsert logic
         execute_query(cursor, '''
             SELECT id FROM timetables WHERE class_id = ? AND section_name = ? AND day_of_week = ? AND period_number = ?
         ''', (class_id, section, day, period))
@@ -2796,21 +2833,27 @@ def save_timetable_slot_relational():
         
         if existing:
             execute_query(cursor, '''
-                UPDATE timetables 
+                UPDATE timetables
                 SET start_time=?, end_time=?, subject_id=?, teacher_id=?
                 WHERE id = ?
             ''', (start_time, end_time, subject_id, teacher_id, existing[0]))
+            print(f"✅ Updated existing slot: {existing[0]}")
         else:
             execute_query(cursor, '''
                 INSERT INTO timetables (class_id, section_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (class_id, section, day, period, start_time, end_time, subject_id, teacher_id))
-            
+            print(f"✅ Inserted new slot")
+
         conn.commit()
         conn.close()
         return jsonify({"success": True, "message": "🎉 Period matrix saved seamlessly!"})
     except Exception as e:
-        if 'conn' in locals(): conn.close()
+        if 'conn' in locals():
+            conn.close()
+        print(f"❌ Timetable save error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
     
 # =====================================================================
