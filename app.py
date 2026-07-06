@@ -2020,6 +2020,159 @@ def mark_qr_attendance():
     
     return jsonify({"success": True, "message": "Attendance marked successfully!"})
 
+# =====================================================================
+# 📋 MANUAL STAFF ATTENDANCE APIs (For Admin)
+# =====================================================================
+
+@app.route('/api/staff/manual-attendance', methods=['POST'])
+def manual_staff_attendance():
+    """Admin manually mark staff attendance with custom time and date"""
+    data = request.json or {}
+    staff_id = data.get('staff_id')
+    date_str = data.get('date')  # YYYY-MM-DD format
+    check_in_time = data.get('check_in_time')  # HH:MM:SS format
+    check_out_time = data.get('check_out_time')  # HH:MM:SS format (optional)
+    status = data.get('status', 'Present')
+    
+    if not staff_id or not date_str or not check_in_time:
+        return jsonify({"success": False, "error": "Staff ID, Date aur Check-in time zaroori hain!"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if staff exists
+        execute_query(cursor, "SELECT id, name FROM staff WHERE id = ? AND status = 'Active'", (staff_id,))
+        staff = cursor.fetchone()
+        if not staff:
+            conn.close()
+            return jsonify({"success": False, "error": "Staff not found"}), 404
+        
+        # Check if attendance already exists for this date
+        execute_query(cursor, "SELECT id FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, date_str))
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing attendance
+            if check_out_time:
+                execute_query(cursor, """
+                    UPDATE staff_attendance 
+                    SET check_in_time = ?, check_out_time = ?, status = ?, is_half_day = ?, leave_type = ?
+                    WHERE id = ?
+                """, (check_in_time, check_out_time, status, 1 if status == 'Half-Day' else 0, 'Present' if status not in ['Leave', 'Absent'] else status, existing[0]))
+            else:
+                execute_query(cursor, """
+                    UPDATE staff_attendance 
+                    SET check_in_time = ?, status = ?, is_half_day = ?, leave_type = ?
+                    WHERE id = ?
+                """, (check_in_time, status, 1 if status == 'Half-Day' else 0, 'Present' if status not in ['Leave', 'Absent'] else status, existing[0]))
+            
+            message = "Attendance updated successfully!"
+        else:
+            # Insert new attendance
+            execute_query(cursor, """
+                INSERT INTO staff_attendance (staff_id, date, check_in_time, check_out_time, status, is_half_day, leave_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (staff_id, date_str, check_in_time, check_out_time or None, status, 1 if status == 'Half-Day' else 0, 'Present' if status not in ['Leave', 'Absent'] else status))
+            
+            message = "Attendance marked successfully!"
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "message": message})
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        print(f"❌ Manual attendance error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/staff/attendance/<int:staff_id>/<string:date_str>', methods=['GET', 'DELETE'])
+def get_staff_attendance_by_date(staff_id, date_str):
+    """Get or delete staff attendance for specific date"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if request.method == 'GET':
+        execute_query(cursor, """
+            SELECT id, check_in_time, check_out_time, status, is_half_day, leave_type
+            FROM staff_attendance
+            WHERE staff_id = ? AND date = ?
+        """, (staff_id, date_str))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return jsonify({
+                "success": True,
+                "attendance": {
+                    "id": row[0],
+                    "check_in_time": row[1] or "",
+                    "check_out_time": row[2] or "",
+                    "status": row[3] or "Present",
+                    "is_half_day": bool(row[4]),
+                    "leave_type": row[5] or "Present"
+                }
+            })
+        return jsonify({"success": True, "attendance": None})
+    
+    else:  # DELETE
+        execute_query(cursor, "DELETE FROM staff_attendance WHERE staff_id = ? AND date = ?", (staff_id, date_str))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": "Attendance deleted successfully!"})
+
+
+@app.route('/api/staff/attendance/all', methods=['GET'])
+def get_all_staff_attendance():
+    """Get all staff attendance with filters"""
+    date_str = request.args.get('date')  # YYYY-MM-DD
+    staff_id = request.args.get('staff_id')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    query = """
+        SELECT sa.id, s.id as staff_id, s.name, s.designation, sa.date, sa.check_in_time, sa.check_out_time, 
+               sa.status, sa.is_half_day, sa.leave_type
+        FROM staff_attendance sa
+        JOIN staff s ON sa.staff_id = s.id
+        WHERE s.status = 'Active'
+    """
+    params = []
+    
+    if date_str:
+        query += " AND sa.date = ?"
+        params.append(date_str)
+    if staff_id:
+        query += " AND sa.staff_id = ?"
+        params.append(staff_id)
+    
+    query += " ORDER BY sa.date DESC, s.name ASC"
+    
+    execute_query(cursor, query, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    attendance_list = []
+    for r in rows:
+        attendance_list.append({
+            "id": r[0],
+            "staff_id": r[1],
+            "name": r[2],
+            "designation": r[3],
+            "date": r[4],
+            "check_in_time": r[5] or "",
+            "check_out_time": r[6] or "",
+            "status": r[7] or "Present",
+            "is_half_day": bool(r[8]),
+            "leave_type": r[9] or "Present"
+        })
+    
+    return jsonify({"success": True, "attendance": attendance_list})
+
 # ==================== 📊 LIVE PAYROLL & ATTENDANCE DATA ENGINE ====================
 
 # 🗓️ 1. TODAY'S ATTENDANCE DIRECTORY ROUTE
