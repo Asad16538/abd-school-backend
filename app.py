@@ -2758,102 +2758,141 @@ def fetch_class_timetable_relational():
 def save_timetable_slot_relational():
     data = request.json or {}
     
-    # 🔥 DEBUG LOGS
     print("🔥🔥🔥 TIMETABLE SAVE REQUEST 🔥🔥🔥")
     print(f"📥 Received data: {data}")
     
     class_id_raw = data.get('class_id')
     section = data.get('section', 'A')
     day = data.get('day')
-    period = int(data.get('period', 1))
+    period = data.get('period', 1)
     start_time = data.get('start_time')
     end_time = data.get('end_time')
     subject_id = data.get('subject_id')
     teacher_id = data.get('teacher_id')
     
-    # ✅ FIX: class_id ko integer mein convert karo
-    try:
-        # Agar class_id string hai toh integer mein convert karo
-        if isinstance(class_id_raw, str) and class_id_raw.isdigit():
-            class_id = int(class_id_raw)
-        else:
-            class_id = class_id_raw
-    except (ValueError, TypeError):
-        return jsonify({"success": False, "error": "Invalid class_id format!"}), 400
+    # ✅ VALIDATION
+    if not class_id_raw:
+        print("❌ class_id is missing!")
+        return jsonify({"success": False, "error": "class_id is required!"}), 400
     
-    # 🔥 DEBUG
-    print(f"📥 class_id: {class_id} (type: {type(class_id)})")
+    if not day:
+        print("❌ day is missing!")
+        return jsonify({"success": False, "error": "day is required!"}), 400
     
-    if not class_id or not day or not period:
-        return jsonify({"success": False, "error": "Required fields missing hain!"}), 400
+    if not period:
+        print("❌ period is missing!")
+        return jsonify({"success": False, "error": "period is required!"}), 400
         
     conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        # ✅ FIX: Agar class_id string hai toh classes table se ID fetch karo
-        if isinstance(class_id, str):
-            execute_query(cursor, "SELECT id FROM classes WHERE class_name = ?", (class_id,))
+        # ✅ STEP 1: class_name se ID fetch karo
+        actual_class_id = None
+        
+        # Agar class_id string hai toh classes table se ID fetch karo
+        if isinstance(class_id_raw, str):
+            print(f"🔍 Searching for class: '{class_id_raw}'")
+            # Exact match try karo
+            execute_query(cursor, "SELECT id, class_name FROM classes WHERE class_name = %s", (class_id_raw,))
             class_row = cursor.fetchone()
             if class_row:
-                class_id = class_row[0]
-                print(f"✅ Converted class_name '{class_id_raw}' to ID: {class_id}")
+                actual_class_id = class_row[0]
+                print(f"✅ Found class: {class_row[1]} with ID: {actual_class_id}")
             else:
-                conn.close()
-                return jsonify({"success": False, "error": f"Class '{class_id_raw}' not found!"}), 400
-        
-        # ✅ Agar teacher_id string hai toh integer mein convert karo
-        if teacher_id:
+                # Agar nahi mila toh LIKE search karo
+                execute_query(cursor, "SELECT id, class_name FROM classes WHERE class_name LIKE %s", (f"%{class_id_raw}%",))
+                class_row = cursor.fetchone()
+                if class_row:
+                    actual_class_id = class_row[0]
+                    print(f"✅ Found class (LIKE): {class_row[1]} with ID: {actual_class_id}")
+                else:
+                    conn.close()
+                    print(f"❌ Class not found: '{class_id_raw}'")
+                    return jsonify({"success": False, "error": f"Class '{class_id_raw}' not found in database!"}), 400
+        else:
+            # Agar already integer hai toh seedha use karo
             try:
-                teacher_id = int(teacher_id)
+                actual_class_id = int(class_id_raw)
+                print(f"✅ class_id is already integer: {actual_class_id}")
             except (ValueError, TypeError):
                 conn.close()
-                return jsonify({"success": False, "error": "Invalid teacher_id format!"}), 400
+                return jsonify({"success": False, "error": "Invalid class_id format!"}), 400
         
-        # 🛡️ ANTI-CLASH INTERCEPTOR
-        if teacher_id:
-            execute_query(cursor, '''
-                SELECT c.class_name, t.section_name FROM timetables t
-                JOIN classes c ON t.class_id = c.id
-                WHERE t.day_of_week = ? AND t.period_number = ? AND t.teacher_id = ? AND NOT (t.class_id = ? AND t.section_name = ?)
-            ''', (day, period, teacher_id, class_id, section))
-            clash = cursor.fetchone()
-            if clash:
+        # ✅ STEP 2: teacher_id ko integer mein convert karo
+        actual_teacher_id = None
+        if teacher_id and teacher_id != '' and teacher_id != 'null':
+            try:
+                actual_teacher_id = int(teacher_id)
+                print(f"✅ teacher_id converted: {actual_teacher_id}")
+                
+                # Verify teacher exists
+                execute_query(cursor, "SELECT id, name FROM staff WHERE id = %s AND status = 'Active'", (actual_teacher_id,))
+                teacher = cursor.fetchone()
+                if not teacher:
+                    conn.close()
+                    print(f"❌ Teacher not found: {actual_teacher_id}")
+                    return jsonify({"success": False, "error": f"Teacher with ID {actual_teacher_id} not found!"}), 400
+                print(f"✅ Teacher found: {teacher[1]}")
+            except (ValueError, TypeError) as e:
+                print(f"❌ Invalid teacher_id: {teacher_id}")
                 conn.close()
-                return jsonify({
-                    "success": False,
-                    "error": f"❌ Teacher Clash! Yeh teacher pehle se {clash[0]} - {clash[1]} ke isi period me busy hain!"
-                }), 400
-
-        # Upsert logic
+                return jsonify({"success": False, "error": f"Invalid teacher_id: {teacher_id}"}), 400
+        
+        # ✅ STEP 3: Check if timetable entry exists
         execute_query(cursor, '''
-            SELECT id FROM timetables WHERE class_id = ? AND section_name = ? AND day_of_week = ? AND period_number = ?
-        ''', (class_id, section, day, period))
+            SELECT id FROM timetables 
+            WHERE class_id = %s AND section_name = %s AND day_of_week = %s AND period_number = %s
+        ''', (actual_class_id, section, day, int(period)))
         existing = cursor.fetchone()
         
+        print(f"📥 Existing slot: {existing}")
+        
         if existing:
-            execute_query(cursor, '''
-                UPDATE timetables
-                SET start_time=?, end_time=?, subject_id=?, teacher_id=?
-                WHERE id = ?
-            ''', (start_time, end_time, subject_id, teacher_id, existing[0]))
+            # Update
+            if actual_teacher_id:
+                execute_query(cursor, '''
+                    UPDATE timetables 
+                    SET start_time=%s, end_time=%s, subject_id=%s, teacher_id=%s
+                    WHERE id = %s
+                ''', (start_time, end_time, subject_id, actual_teacher_id, existing[0]))
+            else:
+                execute_query(cursor, '''
+                    UPDATE timetables 
+                    SET start_time=%s, end_time=%s, subject_id=%s, teacher_id=NULL
+                    WHERE id = %s
+                ''', (start_time, end_time, subject_id, existing[0]))
             print(f"✅ Updated existing slot: {existing[0]}")
         else:
-            execute_query(cursor, '''
-                INSERT INTO timetables (class_id, section_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (class_id, section, day, period, start_time, end_time, subject_id, teacher_id))
+            # Insert
+            if actual_teacher_id:
+                execute_query(cursor, '''
+                    INSERT INTO timetables (class_id, section_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (actual_class_id, section, day, int(period), start_time, end_time, subject_id, actual_teacher_id))
+            else:
+                execute_query(cursor, '''
+                    INSERT INTO timetables (class_id, section_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
+                ''', (actual_class_id, section, day, int(period), start_time, end_time, subject_id))
             print(f"✅ Inserted new slot")
-
+        
         conn.commit()
         conn.close()
+        print("=" * 60)
+        print("✅ TIMETABLE SAVE SUCCESSFUL")
+        print("=" * 60)
         return jsonify({"success": True, "message": "🎉 Period matrix saved seamlessly!"})
+        
     except Exception as e:
         if 'conn' in locals():
             conn.close()
-        print(f"❌ Timetable save error: {e}")
+        print("=" * 60)
+        print("❌ TIMETABLE SAVE ERROR")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
+        print("=" * 60)
         return jsonify({"success": False, "error": str(e)}), 500
     
 # =====================================================================
