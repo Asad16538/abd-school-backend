@@ -65,19 +65,29 @@ SECRET_KEY = "ab_digital_work_secret_key_secure_⚡"
 
 # File ke top par add karo
 TELEGRAM_TOKEN = "8793915550:AAGK3RIR9PDQXkawoxaSp-69sfB5jge87A0"
-TELEGRAM_CHAT_ID = "1989970458" # Yahan apni Telegram Chat ID daal dena
 
-# Yeh ek hi function poori file mein hona chahiye
+# ✅ YEH FUNCTION REPLACE KARO - Database se dynamic admin ID
 def send_telegram_msg(text):
-    # CHAT_ID ko yahan hardcode kar do taaki koi confusion na rahe
-    CHAT_ID = "1989970458" 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    """Send Telegram message to admin (dynamic from database)"""
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        execute_query(cursor, "SELECT telegram_admin_id FROM school_settings WHERE id = 1")
+        row = cursor.fetchone()
+        conn.close()
+        
+        # ✅ Database se ID lo, agar nahi hai toh fallback
+        admin_chat_id = row[0] if row and row[0] else "1989970458"  # Fallback ID
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": admin_chat_id, "text": text, "parse_mode": "Markdown"}
         response = requests.post(url, json=payload, timeout=5)
-        print("Telegram Response:", response.text) # <--- Isse Render Logs mein dikh jayega ki message gaya ya nahi
+        print(f"✅ Telegram sent to admin: {admin_chat_id}")
+        print("Telegram Response:", response.text)
+        return True
     except Exception as e:
-        print(f"Telegram Bot Error: {e}")
+        print(f"❌ Telegram Bot Error: {e}")
+        return False
 
 def init_db():
     conn = get_db_connection()
@@ -109,6 +119,13 @@ def init_db():
             school_signature TEXT
         )
     ''')
+    
+    # ✅ YEH ADD KARO - telegram_admin_id column
+    try:
+        execute_query(cursor, "ALTER TABLE school_settings ADD COLUMN IF NOT EXISTS telegram_admin_id TEXT")
+        print("✅ telegram_admin_id column added successfully!")
+    except Exception as e:
+        print(f"⚠️ telegram_admin_id column already exists or error: {e}")
     
     # 3. Upgraded Students Table (Complete)
     execute_query(cursor, '''
@@ -1287,7 +1304,7 @@ def manage_settings():
     if request.method == 'GET':
         conn = get_db_connection()
         cursor = conn.cursor()
-        execute_query(cursor, "SELECT school_name, school_address, school_email, school_mobile, school_logo, school_signature FROM school_settings WHERE id = 1")
+        execute_query(cursor, "SELECT school_name, school_address, school_email, school_mobile, school_logo, school_signature, telegram_admin_id FROM school_settings WHERE id = 1")
         row = cursor.fetchone()
         
         execute_query(cursor, "SELECT school_latitude, school_longitude, allowed_radius_meters FROM attendance_rules WHERE id = 1")
@@ -1301,12 +1318,13 @@ def manage_settings():
             "school_mobile": row[3] if row else "", 
             "school_logo": row[4] if row else None, 
             "school_signature": row[5] if row else None,
+            "telegram_admin_id": row[6] if row else "",  # ✅ YEH ADD KARO
             "school_latitude": rules_row[0] if rules_row else 24.7432,
             "school_longitude": rules_row[1] if rules_row else 78.8561,
             "school_location_radius": rules_row[2] if rules_row else 50
         })
         
-    else:
+    else:  # POST
         data = request.json or {}
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1315,11 +1333,20 @@ def manage_settings():
             # 1. School Profile Metadata Updates
             execute_query(cursor, '''
                 UPDATE school_settings 
-                SET school_name=?, school_address=?, school_email=?, school_mobile=?, school_logo=?, school_signature=? 
+                SET school_name=?, school_address=?, school_email=?, school_mobile=?, 
+                    school_logo=?, school_signature=?, telegram_admin_id=? 
                 WHERE id=1
-            ''', (data.get('school_name'), data.get('school_address'), data.get('school_email'), data.get('school_mobile'), data.get('school_logo'), data.get('school_signature')))
+            ''', (
+                data.get('school_name'), 
+                data.get('school_address'), 
+                data.get('school_email'), 
+                data.get('school_mobile'), 
+                data.get('school_logo'), 
+                data.get('school_signature'),
+                data.get('telegram_admin_id', '').strip()  # ✅ YEH ADD KARO
+            ))
             
-            # 2. 🎯 EXACT KEYS INTERCEPTOR: Frontend aur backend keys ko tightly bind kiya
+            # 2. 🎯 EXACT KEYS INTERCEPTOR
             new_lat = data.get('school_latitude') if data.get('school_latitude') is not None else data.get('latitude')
             new_lng = data.get('school_longitude') if data.get('school_longitude') is not None else data.get('longitude')
             new_rad = data.get('school_location_radius') if data.get('school_location_radius') is not None else data.get('allowed_radius_meters')
@@ -1377,7 +1404,7 @@ def send_verification():
         
         return jsonify({
             "success": True, 
-            "message": "🎉 OTP tumhare Telegram par bhej diya gaya hai!"
+            "message": "🎉 OTP Aapke Telegram par bhej diya gaya hai!"
         })
     
     return jsonify({"success": False, "message": "User nahi mila!"})
