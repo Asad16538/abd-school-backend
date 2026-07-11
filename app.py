@@ -4831,6 +4831,7 @@ def remove_subject_from_class():
 # =====================================================================
 
 @app.route('/api/class-teacher/assign', methods=['POST'])
+@app.route('/api/class-teacher/assign', methods=['POST'])
 def assign_class_teacher():
     """Assign a teacher to a class"""
     data = request.json or {}
@@ -4851,8 +4852,6 @@ def assign_class_teacher():
             conn.close()
             return jsonify({"success": False, "error": f"Class '{class_name}' not found!"}), 400
         
-        class_id = class_row[0]
-        
         # ✅ Check if teacher exists
         execute_query(cursor, "SELECT id, name FROM staff WHERE id = %s AND status = 'Active'", (teacher_id,))
         teacher = cursor.fetchone()
@@ -4860,7 +4859,17 @@ def assign_class_teacher():
             conn.close()
             return jsonify({"success": False, "error": "Teacher not found!"}), 400
         
-        # ✅ Update staff table with assigned_class
+        # ✅ Check if teacher already assigned to a class
+        execute_query(cursor, "SELECT assigned_class FROM staff WHERE id = %s AND assigned_class IS NOT NULL AND assigned_class != ''", (teacher_id,))
+        existing = cursor.fetchone()
+        if existing and existing[0]:
+            conn.close()
+            return jsonify({
+                "success": False, 
+                "error": f"❌ Teacher is already assigned to class {existing[0]}!"
+            }), 400
+        
+        # ✅ Assign teacher to class
         execute_query(cursor, """
             UPDATE staff SET assigned_class = %s, assigned_section = 'A' WHERE id = %s
         """, (class_name, teacher_id))
@@ -4877,6 +4886,8 @@ def assign_class_teacher():
         if 'conn' in locals():
             conn.close()
         print(f"❌ Class Teacher assign error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 
