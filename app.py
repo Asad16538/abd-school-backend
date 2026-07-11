@@ -190,21 +190,26 @@ def init_db():
     ''')
     
     # 6. Staff Directory Table (Complete with all columns)
-    execute_query(cursor, '''
-        CREATE TABLE IF NOT EXISTS staff (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            designation TEXT,
-            mobile TEXT NOT NULL,
-            base_salary REAL DEFAULT 0,
-            status TEXT DEFAULT 'Active',
-            pf_enabled INTEGER DEFAULT 0,
-            pf_percentage REAL DEFAULT 12.0,
-            available_cl INTEGER DEFAULT 12,
-            telegram_id TEXT,
-            device_token TEXT
-        )
-    ''')
+execute_query(cursor, '''
+    CREATE TABLE IF NOT EXISTS staff (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        designation TEXT,
+        mobile TEXT NOT NULL,
+        base_salary REAL DEFAULT 0,
+        status TEXT DEFAULT 'Active',
+        pf_enabled INTEGER DEFAULT 0,
+        pf_percentage REAL DEFAULT 12.0,
+        available_cl INTEGER DEFAULT 12,
+        telegram_id TEXT,
+        device_token TEXT,
+        roll TEXT DEFAULT 'Teacher',
+        subject TEXT,
+        class_teacher TEXT,
+        assigned_class TEXT,
+        assigned_section TEXT
+    )
+''')
     
     # 7. Attendance Rules Table (Complete)
     execute_query(cursor, '''
