@@ -627,6 +627,31 @@ def init_db():
         print("✅ Database indexes created successfully!")
     except Exception as idx_err:
         print(f"⚠️ Index creation warning: {idx_err}")
+        
+    # =====================================================================
+    # 🔥 DEFAULT CLASSES INSERT
+    # =====================================================================
+    
+    try:
+        execute_query(cursor, "SELECT COUNT(*) FROM classes")
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            class_list = [
+                'Nursery', 'LKG', 'UKG',
+                'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5',
+                'Class 6', 'Class 7', 'Class 8', 'Class 9', 'Class 10',
+                'Class 11 (PCB)', 'Class 11 (PCM)', 'Class 11 (Commerce)', 'Class 11 (Arts)',
+                'Class 12 (PCB)', 'Class 12 (PCM)', 'Class 12 (Commerce)', 'Class 12 (Arts)'
+            ]
+            
+            for class_name in class_list:
+                execute_query(cursor, "INSERT INTO classes (class_name) VALUES (%s)", (class_name,))
+                print(f"✅ Added class: {class_name}")
+            
+            print("✅ All default classes added successfully!")
+    except Exception as e:
+        print(f"⚠️ Classes insertion error: {e}")
     
     # ✅ YAHAN COMMIT AUR CLOSE HONA CHAHIYE
     conn.commit()
