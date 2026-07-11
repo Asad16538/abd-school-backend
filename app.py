@@ -4826,6 +4826,114 @@ def remove_subject_from_class():
         conn.close()
         return jsonify({"success": False, "error": str(e)}), 500
     
+# =====================================================================
+# 👨‍🏫 CLASS TEACHER ASSIGNMENT APIs
+# =====================================================================
+
+@app.route('/api/class-teacher/assign', methods=['POST'])
+def assign_class_teacher():
+    """Assign a teacher to a class"""
+    data = request.json or {}
+    class_name = data.get('class_name')
+    teacher_id = data.get('teacher_id')
+    
+    if not class_name or not teacher_id:
+        return jsonify({"success": False, "error": "Class and Teacher are required!"}), 400
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # ✅ Check if class exists
+        execute_query(cursor, "SELECT id FROM classes WHERE class_name = %s", (class_name,))
+        class_row = cursor.fetchone()
+        if not class_row:
+            conn.close()
+            return jsonify({"success": False, "error": f"Class '{class_name}' not found!"}), 400
+        
+        class_id = class_row[0]
+        
+        # ✅ Check if teacher exists
+        execute_query(cursor, "SELECT id, name FROM staff WHERE id = %s AND status = 'Active'", (teacher_id,))
+        teacher = cursor.fetchone()
+        if not teacher:
+            conn.close()
+            return jsonify({"success": False, "error": "Teacher not found!"}), 400
+        
+        # ✅ Update staff table with assigned_class
+        execute_query(cursor, """
+            UPDATE staff SET assigned_class = %s, assigned_section = 'A' WHERE id = %s
+        """, (class_name, teacher_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"✅ {teacher[1]} assigned as Class Teacher of {class_name}!"
+        })
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        print(f"❌ Class Teacher assign error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/class-teacher/list', methods=['GET'])
+def get_class_teachers():
+    """Get all class teachers assigned"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        execute_query(cursor, """
+            SELECT s.id, s.name, s.designation, s.assigned_class, s.assigned_section
+            FROM staff s
+            WHERE s.assigned_class IS NOT NULL AND s.assigned_class != ''
+            ORDER BY s.assigned_class ASC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        teachers = []
+        for r in rows:
+            teachers.append({
+                "teacher_id": r[0],
+                "name": r[1],
+                "designation": r[2],
+                "class": r[3],
+                "section": r[4] or 'A'
+            })
+        
+        return jsonify({"success": True, "teachers": teachers})
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/class-teacher/remove/<int:teacher_id>', methods=['DELETE'])
+def remove_class_teacher(teacher_id):
+    """Remove teacher from class assignment"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        execute_query(cursor, """
+            UPDATE staff SET assigned_class = NULL, assigned_section = NULL WHERE id = %s
+        """, (teacher_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "message": "✅ Teacher removed from class!"})
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+    
 @app.route('/api/staff/link-telegram', methods=['POST'])
 def staff_link_telegram():
     data = request.json
