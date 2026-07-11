@@ -4834,13 +4834,12 @@ def remove_subject_from_class():
 # =====================================================================
 # 👨‍🏫 CLASS TEACHER ASSIGNMENT APIs
 # =====================================================================
-
-@app.route('/api/class-teacher/assign', methods=['POST'])
 @app.route('/api/class-teacher/assign', methods=['POST'])
 def assign_class_teacher():
-    """Assign a teacher to a class"""
+    """Assign a teacher to a class with section"""
     data = request.json or {}
     class_name = data.get('class_name')
+    section = data.get('section', 'A')  # ✅ Section lo
     teacher_id = data.get('teacher_id')
     
     if not class_name or not teacher_id:
@@ -4865,26 +4864,26 @@ def assign_class_teacher():
             return jsonify({"success": False, "error": "Teacher not found!"}), 400
         
         # ✅ Check if teacher already assigned to a class
-        execute_query(cursor, "SELECT assigned_class FROM staff WHERE id = %s AND assigned_class IS NOT NULL AND assigned_class != ''", (teacher_id,))
+        execute_query(cursor, "SELECT assigned_class, assigned_section FROM staff WHERE id = %s AND assigned_class IS NOT NULL AND assigned_class != ''", (teacher_id,))
         existing = cursor.fetchone()
         if existing and existing[0]:
             conn.close()
             return jsonify({
                 "success": False, 
-                "error": f"❌ Teacher is already assigned to class {existing[0]}!"
+                "error": f"❌ Teacher is already assigned to class {existing[0]} - Section {existing[1] or 'A'}!"
             }), 400
         
-        # ✅ Assign teacher to class
+        # ✅ Assign teacher to class with section
         execute_query(cursor, """
-            UPDATE staff SET assigned_class = %s, assigned_section = 'A' WHERE id = %s
-        """, (class_name, teacher_id))
+            UPDATE staff SET assigned_class = %s, assigned_section = %s WHERE id = %s
+        """, (class_name, section, teacher_id))
         
         conn.commit()
         conn.close()
         
         return jsonify({
             "success": True,
-            "message": f"✅ {teacher[1]} assigned as Class Teacher of {class_name}!"
+            "message": f"✅ {teacher[1]} assigned as Class Teacher of {class_name} - Section {section}!"
         })
         
     except Exception as e:
