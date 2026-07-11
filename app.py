@@ -888,49 +888,82 @@ def bulk_import_students():
         cursor = conn.cursor()
         
         success_count = 0
+        duplicate_count = 0
+        error_list = []
+        
         for s in students_list:
             try:
-                # Excel/Form columns mapping safely
+                admission_no = str(s.get('Admission No', s.get('admission_no', ''))).strip()
+                roll_no = str(s.get('Roll No', s.get('roll_no', ''))).strip()
+                name = s.get('Student Name', s.get('name', ''))
+                student_class = str(s.get('Class', s.get('student_class', ''))).strip()
+                section = str(s.get('Section', s.get('section', 'A'))).strip()
+                dob = s.get('DOB', s.get('dob', ''))
+                gender = s.get('Gender', s.get('gender', 'Male'))
+                category = s.get('Category', s.get('category', 'General'))
+                aadhaar_no = str(s.get('Aadhaar No', s.get('aadhaar_no', ''))).strip()
+                samagra_id = str(s.get('Samagra ID', s.get('samagra_id', ''))).strip()
+                father_name = s.get('Father Name', s.get('father_name', ''))
+                mother_name = s.get('Mother Name', s.get('mother_name', ''))
+                parent_mobile = str(s.get('WhatsApp No', s.get('whatsapp_no', ''))).strip()
+                address = s.get('Address', s.get('address', ''))
+                fee_cycle = s.get('Fee Cycle', s.get('fee_cycle', 'Monthly'))
+                cycle_fee_amount = float(s.get('Cycle Fee Amount', s.get('cycle_fee_amount', 0)) or 0)
+                school_fee_total = float(s.get('Total Fee', s.get('school_fee_total', 0)) or 0)
+                transport_fee_total = float(s.get('Transport Fee', s.get('transport_fee_total', 0)) or 0)
+                bank_name = s.get('Bank Name', s.get('bank_name', ''))
+                account_no = str(s.get('Account No', s.get('account_no', ''))).strip()
+                ifsc_code = s.get('IFSC Code', s.get('ifsc_code', ''))
+                
+                # ✅ CHECK IF STUDENT ALREADY EXISTS
+                execute_query(cursor, "SELECT id FROM students WHERE admission_no = %s OR (parent_mobile = %s AND name = %s)", 
+                              (admission_no, parent_mobile, name))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    duplicate_count += 1
+                    error_list.append(f"Admission No {admission_no} already exists")
+                    continue  # ✅ Skip this student, transaction continue
+                
+                # ✅ INSERT
                 execute_query(cursor, '''
                     INSERT INTO students (
                         admission_no, roll_no, name, class, section, dob, gender, category,
                         aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address, 
                         fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
-                    str(s.get('Admission No', s.get('admission_no', ''))), 
-                    str(s.get('Roll No', s.get('roll_no', ''))), 
-                    s.get('Student Name', s.get('name', '')),
-                    s.get('Class', s.get('student_class', '')), 
-                    s.get('Section', s.get('section', 'A')), 
-                    s.get('DOB', s.get('dob', '')), 
-                    s.get('Gender', s.get('gender', 'Male')),
-                    s.get('Category', s.get('category', 'General')),
-                    str(s.get('Aadhaar No', s.get('aadhaar_no', ''))), 
-                    str(s.get('Samagra ID', s.get('samagra_id', ''))), 
-                    s.get('Father Name', s.get('father_name', '')),
-                    s.get('Mother Name', s.get('mother_name', '')), 
-                    str(s.get('WhatsApp No', s.get('whatsapp_no', ''))), 
-                    s.get('Address', s.get('address', '')),
-                    s.get('Fee Cycle', s.get('fee_cycle', 'Monthly')), # New cycle mapping
-                    float(s.get('Cycle Fee Amount', s.get('cycle_fee_amount', 0)) or 0),
-                    float(s.get('Total Fee', s.get('school_fee_total', 0)) or 0), # Custom input read
-                    float(s.get('Transport Fee', s.get('transport_fee_total', 0)) or 0),
-                    s.get('Bank Name', s.get('bank_name', '')), 
-                    str(s.get('Account No', s.get('account_no', ''))), 
-                    s.get('IFSC Code', s.get('ifsc_code', ''))
+                    admission_no, roll_no, name, student_class, section, dob, gender, category,
+                    aadhaar_no, samagra_id, father_name, mother_name, parent_mobile, address,
+                    fee_cycle, cycle_fee_amount, school_fee_total, transport_fee_total, bank_name, account_no, ifsc_code
                 ))
                 success_count += 1
-            except Exception as e:
-                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                    continue
-                # Baaki errors ke liye raise karo
-                raise e
                 
+            except Exception as e:
+                # ✅ Individual error ko log karo, transaction continue
+                error_list.append(f"Error for {s.get('name', 'Unknown')}: {str(e)[:50]}")
+                print(f"⚠️ Student import error: {e}")
+                continue  # ✅ Continue with next student
+        
+        # ✅ COMMIT SIRF SUCCESSFUL RECORDS
         conn.commit()
         conn.close()
-        return jsonify({"success": True, "message": f"{success_count} bache system mein register ho gaye!"})
+        
+        message = f"{success_count} students imported successfully!"
+        if duplicate_count > 0:
+            message += f" {duplicate_count} duplicates skipped."
+        if error_list:
+            message += f" {len(error_list)} errors occurred."
+            
+        return jsonify({"success": True, "message": message, "errors": error_list})
+        
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()  # ✅ Rollback on major error
+            conn.close()
+        print(f"❌ Bulk import error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
     
 # =====================================================================
