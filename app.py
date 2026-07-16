@@ -50,13 +50,21 @@ def execute_query(cursor, query, params=()):
 
 def get_db_connection():
     if DATABASE_URL:
-        # ✅ SSL disable karo
-        conn = psycopg2.connect(
-            DATABASE_URL,
-            sslmode='disable'
-        )
-        conn.autocommit = False
-        return conn
+        try:
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            conn.autocommit = False
+            print("✅ PostgreSQL connected with SSL")
+            return conn
+        except Exception as e:
+            print(f"⚠️ SSL require failed: {e}")
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                conn.autocommit = False
+                print("✅ PostgreSQL connected (SSL from URL)")
+                return conn
+            except Exception as e2:
+                print(f"❌ All connection attempts failed: {e2}")
+                raise
     else:
         return sqlite3.connect(DB_NAME)
 
@@ -88,6 +96,18 @@ def send_telegram_msg(text):
         return True
     except Exception as e:
         print(f"❌ Telegram Bot Error: {e}")
+        return False
+    
+def send_telegram_msg_to_chat(chat_id, text):
+    """Send Telegram message to specific chat ID"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        response = requests.post(url, json=payload, timeout=5)
+        print(f"✅ Telegram sent to chat: {chat_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Telegram Error (chat {chat_id}): {e}")
         return False
 
 def init_db():
@@ -267,7 +287,7 @@ def init_db():
             ]
             
             for class_name in class_list:
-                execute_query(cursor, "INSERT INTO classes (class_name) VALUES (%s)", (class_name,))
+                execute_query(cursor, "INSERT INTO classes (class_name) VALUES (?)", (class_name,))
                 print(f"✅ Added class: {class_name}")
             
             print("✅ All default classes added successfully!")
@@ -670,7 +690,7 @@ def init_db():
             ]
             
             for class_name in class_list:
-                execute_query(cursor, "INSERT INTO classes (class_name) VALUES (%s)", (class_name,))
+                execute_query(cursor, "INSERT INTO classes (class_name) VALUES (?)", (class_name,))
                 print(f"✅ Added class: {class_name}")
             
             print("✅ All default classes added successfully!")
