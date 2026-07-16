@@ -49,15 +49,15 @@ def execute_query(cursor, query, params=()):
         cursor.execute(query, params)
 
 def get_db_connection():
-    """Returns a database connection (PostgreSQL on Render, SQLite locally)"""
     if DATABASE_URL:
-        # ✅ SSL require - no fallback
-        conn = psycopg2.connect(DATABASE_URL)
+        # ✅ SSL disable karo
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            sslmode='disable'
+        )
         conn.autocommit = False
-        print("✅ PostgreSQL connected successfully")
         return conn
     else:
-        # SQLite connection for local development
         return sqlite3.connect(DB_NAME)
 
 # --- MISSING VARIABLES (YAHAN ADD KARO) ---
