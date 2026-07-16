@@ -51,33 +51,16 @@ def execute_query(cursor, query, params=()):
 def get_db_connection():
     """Returns a database connection (PostgreSQL on Render, SQLite locally)"""
     if DATABASE_URL:
-        try:
-            # ✅ PostgreSQL connection with SSL mode 'require'
-            conn = psycopg2.connect(
-                DATABASE_URL,
-                sslmode='require'  # 🔥 YEH IMPORTANT HAI
-            )
-            conn.autocommit = False
-            print("✅ PostgreSQL connected with SSL (require)")
-            return conn
-        except Exception as e:
-            print(f"⚠️ SSL connection failed: {e}")
-            # ✅ Fallback: without SSL (agar internal network ho)
-            try:
-                conn = psycopg2.connect(DATABASE_URL, sslmode='prefer')
-                conn.autocommit = False
-                print("✅ PostgreSQL connected with SSL (prefer)")
-                return conn
-            except:
-                # ✅ Last resort: disable SSL
-                print("⚠️ Connecting without SSL...")
-                conn = psycopg2.connect(DATABASE_URL, sslmode='disable')
-                conn.autocommit = False
-                print("✅ PostgreSQL connected without SSL")
-                return conn
+        # ✅ SIRF SSL require - koi fallback nahi
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            sslmode='require'  # 🔥 SIRF YAHI RAKHO
+        )
+        conn.autocommit = False
+        print("✅ PostgreSQL connected with SSL")
+        return conn
     else:
         # SQLite connection for local development
-        print("📁 Using SQLite database locally")
         return sqlite3.connect(DB_NAME)
 
 # --- MISSING VARIABLES (YAHAN ADD KARO) ---
